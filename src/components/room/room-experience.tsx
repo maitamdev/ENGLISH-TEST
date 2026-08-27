@@ -237,6 +237,15 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePhase, activeQuestion, hasSubmittedCurrent]);
 
+  useEffect(() => {
+    if (activePhase !== "battle" || !activeQuestion || !isHost) return;
+    const timer = window.setTimeout(() => {
+      void api(`/api/matches/${room.match!.id}/force-resolution`, { method: "POST" }).catch(console.error);
+    }, activeQuestion.timeLimit * 1000 + 2000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePhase, activeQuestion, isHost]);
+
   async function api(path: string, init: RequestInit = {}) {
     const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init.headers } });
     const body = await response.json().catch(() => ({}));

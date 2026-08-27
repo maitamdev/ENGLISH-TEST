@@ -27,7 +27,7 @@ async function requestGroqJson(apiKey: string, model: string, prompt: string, ma
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model,
-          temperature: 0.15,
+          temperature: 0.7,
           max_completion_tokens: maxCompletionTokens,
           ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
           response_format: { type: "json_object" },
@@ -194,6 +194,7 @@ export async function POST(request: Request) {
           "Return exactly one JSON object and no markdown: {\"items\":[{\"prompt\":string,\"answer\":string,\"accepted\":[string]}]}.",
           `Blueprint: ${JSON.stringify(blueprint)}`,
           `Players requested: ${parsed.data.request}`,
+          `Randomness seed: ${Math.floor(Math.random() * 1000000)}. Ensure the chosen words/phrases are highly diverse, unexpected, and different every time.`,
           `Generate exactly ${requiredModes.length} questions for rounds ${start + 1}-${start + requiredModes.length}.`,
           `Required modes in this exact order: ${requiredModes.join(", ")}.`,
           "Do not include instructions, levels, timers, explanations, difficulty, publicData, markdown or extra prose; the server creates those fields.",
