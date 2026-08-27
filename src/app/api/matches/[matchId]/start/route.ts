@@ -17,8 +17,8 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
   const { data: members } = await admin.from("room_members").select("user_id, is_ready").eq("room_id", match.room_id);
   if (!members || members.length !== 2) return NextResponse.json({ error: "Exactly two room members are required" }, { status: 409 });
   if (members.some((member) => !member.is_ready)) return NextResponse.json({ error: "Both players must be ready before the match starts" }, { status: 409 });
-  const now = new Date().toISOString();
-  const { error } = await admin.from("matches").update({ status: "active", current_round: 1, started_at: now, round_started_at: now }).eq("id", matchId);
+  
+  const { error } = await admin.rpc("start_match", { target_match_id: matchId });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   const { error: resetError } = await admin.from("room_members").update({ is_ready: false }).eq("room_id", match.room_id);
   if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });

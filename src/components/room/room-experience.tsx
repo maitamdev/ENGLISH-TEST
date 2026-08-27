@@ -223,28 +223,54 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHost, readyCount, room.match?.currentRound, room.match?.id, room.phase]);
 
-  useEffect(() => {
-    if (activePhase !== "battle" || !activeQuestion || hasSubmittedCurrent) return;
-    const questionKey = activeQuestion.id;
-    const timer = window.setTimeout(() => {
-      if (timeoutSubmissionRef.current === questionKey) return;
-      timeoutSubmissionRef.current = questionKey;
-      void api("/api/answers", { method: "POST", body: JSON.stringify({ questionId: questionKey, answer: "⏱ Hết giờ" }) })
-        .catch((error) => { timeoutSubmissionRef.current = ""; showError(error); });
-    }, activeQuestion.timeLimit * 1000);
-    return () => window.clearTimeout(timer);
-    // api is a component helper whose current room/channel state is intentionally used.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePhase, activeQuestion, hasSubmittedCurrent]);
+  const autoSubmitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSubmitQuestionRef = useRef("");
+  const forceResTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const forceResQuestionRef = useRef("");
 
   useEffect(() => {
-    if (activePhase !== "battle" || !activeQuestion || !isHost) return;
-    const timer = window.setTimeout(() => {
-      void api(`/api/matches/${room.match!.id}/force-resolution`, { method: "POST" }).catch(console.error);
-    }, activeQuestion.timeLimit * 1000 + 2000);
-    return () => window.clearTimeout(timer);
+    if (activePhase !== "battle" || !activeQuestion) return;
+    const questionKey = activeQuestion.id;
+
+    // Auto-submit "⏱ Hết giờ" when timer expires (only if user hasn't submitted)
+    if (!hasSubmittedCurrent && autoSubmitQuestionRef.current !== questionKey) {
+      if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
+      autoSubmitQuestionRef.current = questionKey;
+      autoSubmitTimerRef.current = setTimeout(() => {
+        if (timeoutSubmissionRef.current === questionKey) return;
+        timeoutSubmissionRef.current = questionKey;
+        void fetch("/api/answers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ questionId: questionKey, answer: "⏱ Hết giờ" }) })
+          .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Submit failed"); router.refresh(); })
+          .catch((error) => { timeoutSubmissionRef.current = ""; showError(error); });
+      }, activeQuestion.timeLimit * 1000);
+    }
+    if (hasSubmittedCurrent && autoSubmitTimerRef.current) {
+      clearTimeout(autoSubmitTimerRef.current);
+      autoSubmitTimerRef.current = null;
+    }
+
+    // Host force-resolves the round if it's still active after timeLimit + 3s
+    if (isHost && forceResQuestionRef.current !== questionKey && room.match) {
+      if (forceResTimerRef.current) clearTimeout(forceResTimerRef.current);
+      forceResQuestionRef.current = questionKey;
+      const matchId = room.match.id;
+      forceResTimerRef.current = setTimeout(() => {
+        void fetch(`/api/matches/${matchId}/force-resolution`, { method: "POST", headers: { "Content-Type": "application/json" } }).catch(console.error);
+        router.refresh();
+      }, activeQuestion.timeLimit * 1000 + 3000);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePhase, activeQuestion, isHost]);
+  });
+
+  // Clean up timers when leaving battle phase
+  useEffect(() => {
+    if (activePhase !== "battle") {
+      if (autoSubmitTimerRef.current) { clearTimeout(autoSubmitTimerRef.current); autoSubmitTimerRef.current = null; }
+      if (forceResTimerRef.current) { clearTimeout(forceResTimerRef.current); forceResTimerRef.current = null; }
+      autoSubmitQuestionRef.current = "";
+      forceResQuestionRef.current = "";
+    }
+  }, [activePhase]);
 
   async function api(path: string, init: RequestInit = {}) {
     const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init.headers } });

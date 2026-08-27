@@ -94,7 +94,7 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
   }
 
   const nextRound = match.current_round + 1;
-  const { error } = await admin.from("matches").update({ current_round: nextRound, round_started_at: new Date().toISOString() }).eq("id", matchId);
+  const { error } = await admin.rpc("advance_match", { target_match_id: matchId, next_round: nextRound });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   const { error: resetError } = await admin.from("room_members").update({ is_ready: false }).eq("room_id", match.room_id);
   if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
