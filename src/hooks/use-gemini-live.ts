@@ -298,7 +298,7 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
       setError(caught instanceof Error ? caught.message : "Could not start Gemini Live");
       setStatus("error");
     }
-  }, [playAudio, releaseAudio, roomId, sessionContext, sessionMode, startCapture, status, stop, stopPlayback]);
+  }, [playAudio, releaseAudio, roomId, sessionContext, sessionMode, startCapture, status, stopPlayback]);
 
   useEffect(() => stop, [stop]);
 

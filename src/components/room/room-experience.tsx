@@ -67,15 +67,12 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
 
   useEffect(() => {
     if (activePhase !== "battle" || !activeQuestion) return;
-    const questionTimeLimit = activeQuestion.timeLimit;
-    const update = () => {
-      const began = activeRoundStartedAt ? new Date(activeRoundStartedAt).getTime() : Date.now();
-      setSeconds(Math.max(0, questionTimeLimit - Math.floor((Date.now() - began) / 1000)));
-    };
-    update();
-    const timer = window.setInterval(update, 1000);
-    return () => window.clearInterval(timer);
-  }, [activePhase, activeQuestion, activeRoundStartedAt]);
+    const reset = window.setTimeout(() => setSeconds(activeQuestion.timeLimit), 0);
+    const interval = window.setInterval(() => {
+      setSeconds((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => { window.clearTimeout(reset); window.clearInterval(interval); };
+  }, [activePhase, activeQuestion]);
 
   useEffect(() => {
     if (room.phase !== "countdown") return;
@@ -173,7 +170,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       if (active && error.name !== "AbortError" && error.status !== 409) showError(error);
     });
     return () => { active = false; controller.abort(); };
-  }, [room.phase, room.match?.id, room.match?.currentRound]);
+  }, [room.phase, room.match]);
 
   useEffect(() => {
     if (room.phase !== "battle" || !room.match?.question || !["listening", "speaking"].includes(gemini.status)) return;
@@ -188,7 +185,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       "Hãy ghi nhớ câu hiện tại, tiếp tục lắng nghe hai người chơi và không tiết lộ đáp án trước khi cả hai nộp bài. Không cần đọc lại toàn bộ thông báo này."
     ].join("\n"));
     if (sent) geminiQuestionRef.current = key;
-  }, [gemini.sendText, gemini.status, room.match?.currentRound, room.match?.id, room.match?.question, room.match?.roundCount, room.phase]);
+  }, [gemini, gemini.sendText, gemini.status, room.match?.currentRound, room.match?.id, room.match?.question, room.match?.roundCount, room.phase]);
 
   useEffect(() => {
     if (room.phase !== "round-result" || !room.match || !["listening", "speaking"].includes(gemini.status)) return;
@@ -211,7 +208,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       "Hãy đánh giá ngay bằng giọng nói tiếng Việt, thật ngắn gọn và thân thiện. Sau đó chờ hai người xác nhận NEXT ROUND."
     ].join("\n"));
     if (sent) geminiEvaluationRef.current = key;
-  }, [gemini.sendText, gemini.status, resolutionState, room.match, room.members, room.phase]);
+  }, [gemini, gemini.sendText, gemini.status, resolutionState, room.match, room.members, room.phase]);
 
   useEffect(() => {
     if (room.phase !== "round-result" || !room.match || !isHost || readyCount !== 2) return;
@@ -227,19 +224,18 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   }, [isHost, readyCount, room.match?.currentRound, room.match?.id, room.phase]);
 
   useEffect(() => {
-    if (activePhase !== "battle" || !activeQuestion || !activeRoundStartedAt || hasSubmittedCurrent) return;
+    if (activePhase !== "battle" || !activeQuestion || hasSubmittedCurrent) return;
     const questionKey = activeQuestion.id;
-    const deadline = new Date(activeRoundStartedAt).getTime() + activeQuestion.timeLimit * 1000;
     const timer = window.setTimeout(() => {
       if (timeoutSubmissionRef.current === questionKey) return;
       timeoutSubmissionRef.current = questionKey;
       void api("/api/answers", { method: "POST", body: JSON.stringify({ questionId: questionKey, answer: "⏱ Hết giờ" }) })
         .catch((error) => { timeoutSubmissionRef.current = ""; showError(error); });
-    }, Math.max(0, deadline - Date.now()));
+    }, activeQuestion.timeLimit * 1000);
     return () => window.clearTimeout(timer);
     // api is a component helper whose current room/channel state is intentionally used.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePhase, activeQuestion, activeRoundStartedAt, hasSubmittedCurrent]);
+  }, [activePhase, activeQuestion, hasSubmittedCurrent]);
 
   async function api(path: string, init: RequestInit = {}) {
     const response = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...init.headers } });
