@@ -6,6 +6,8 @@ export type GeminiLiveStatus = "off" | "connecting" | "listening" | "speaking" |
 
 type LiveMessage = {
   setupComplete?: Record<string, never>;
+  goAway?: { timeLeft?: string };
+  sessionResumptionUpdate?: { newHandle?: string; resumable?: boolean };
   toolCall?: {
     functionCalls?: {
       id?: string;
@@ -30,6 +32,8 @@ type GeminiLiveToolResult = {
 
 type GeminiLiveOptions = {
   onGenerateMatch?: (brief: string) => Promise<GeminiLiveToolResult>;
+  onRequestHint?: () => Promise<GeminiLiveToolResult>;
+  onAudioChunk?: (base64: string) => void;
   sessionMode?: "setup" | "coach";
   sessionContext?: string;
 };
@@ -44,6 +48,21 @@ function pcmToBase64(samples: Float32Array) {
   let binary = "";
   for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
   return btoa(binary);
+}
+
+function resamplePcm(samples: Float32Array, sourceRate: number, targetRate = 16_000) {
+  if (sourceRate === targetRate) return samples;
+  const outputLength = Math.max(1, Math.round(samples.length * targetRate / sourceRate));
+  const output = new Float32Array(outputLength);
+  const ratio = sourceRate / targetRate;
+  for (let index = 0; index < outputLength; index += 1) {
+    const position = index * ratio;
+    const left = Math.floor(position);
+    const right = Math.min(samples.length - 1, left + 1);
+    const fraction = position - left;
+    output[index] = samples[left] * (1 - fraction) + samples[right] * fraction;
+  }
+  return output;
 }
 
 function base64ToPcm(base64: string) {
@@ -72,9 +91,16 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
   const nextPlaybackTimeRef = useRef(0);
   const intentionalCloseRef = useRef(false);
   const handledToolCallsRef = useRef(new Set<string>());
+  const resumptionHandleRef = useRef<string | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const restartRef = useRef<((stream: MediaStream, reconnect?: boolean) => Promise<void>) | null>(null);
   const onGenerateMatchRef = useRef(options.onGenerateMatch);
+  const onRequestHintRef = useRef(options.onRequestHint);
+  const onAudioChunkRef = useRef(options.onAudioChunk);
 
   useEffect(() => { onGenerateMatchRef.current = options.onGenerateMatch; }, [options.onGenerateMatch]);
+  useEffect(() => { onRequestHintRef.current = options.onRequestHint; }, [options.onRequestHint]);
+  useEffect(() => { onAudioChunkRef.current = options.onAudioChunk; }, [options.onAudioChunk]);
 
   const stopPlayback = useCallback(() => {
     playbackSourcesRef.current.forEach((source) => { try { source.stop(); } catch { /* already stopped */ } });
@@ -96,7 +122,7 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
     outputContextRef.current = null;
   }, [stopPlayback]);
 
-  const playAudio = useCallback(async (base64: string) => {
+  const playAudio = useCallback(async (base64: string, relay = false) => {
     const context = outputContextRef.current ?? new AudioContext({ sampleRate: 24_000 });
     outputContextRef.current = context;
     if (context.state === "suspended") await context.resume();
@@ -111,7 +137,10 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
     nextPlaybackTimeRef.current = startAt + buffer.duration;
     playbackSourcesRef.current.add(source);
     source.onended = () => playbackSourcesRef.current.delete(source);
+    if (relay) onAudioChunkRef.current?.(base64);
   }, []);
+
+  const playRemoteAudio = useCallback((base64: string) => playAudio(base64, false), [playAudio]);
 
   const stop = useCallback(() => {
     intentionalCloseRef.current = true;
@@ -137,15 +166,16 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
     const context = captureContextRef.current ?? new AudioContext();
     await context.resume();
     const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(4096, 1, 1);
+    const processor = context.createScriptProcessor(2048, 1, 1);
     const silentGain = context.createGain();
     silentGain.gain.value = 0;
     processor.onaudioprocess = (event) => {
       if (socket.readyState !== WebSocket.OPEN) return;
       const samples = event.inputBuffer.getChannelData(0);
+      const resampled = resamplePcm(samples, context.sampleRate);
       socket.send(JSON.stringify({
         realtimeInput: {
-          audio: { data: pcmToBase64(samples), mimeType: `audio/pcm;rate=${context.sampleRate}` }
+          audio: { data: pcmToBase64(resampled), mimeType: "audio/pcm;rate=16000" }
         }
       }));
     };
@@ -158,13 +188,17 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
     silentGainRef.current = silentGain;
   }, []);
 
-  const start = useCallback(async (stream: MediaStream) => {
-    if (status === "connecting" || status === "listening" || status === "speaking") return;
+  const start = useCallback(async (stream: MediaStream, reconnect = false) => {
+    if (!reconnect && (status === "connecting" || status === "listening" || status === "speaking")) return;
     intentionalCloseRef.current = false;
     setError(null);
-    setInputTranscript("");
-    setOutputTranscript("");
-    handledToolCallsRef.current.clear();
+    if (!reconnect) {
+      reconnectAttemptsRef.current = 0;
+      resumptionHandleRef.current = null;
+      setInputTranscript("");
+      setOutputTranscript("");
+      handledToolCallsRef.current.clear();
+    }
     setStatus("connecting");
 
     try {
@@ -193,6 +227,8 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
                 voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } }
               }
             },
+            sessionResumption: resumptionHandleRef.current ? { handle: resumptionHandleRef.current } : {},
+            contextWindowCompression: { slidingWindow: {} },
             tools: [{
               functionDeclarations: [{
                 name: "generate_match",
@@ -207,6 +243,10 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
                   },
                   required: ["brief"]
                 }
+              }, {
+                name: "request_hint",
+                description: "Xin một gợi ý an toàn từ server cho câu đang thi khi người chơi nói rằng họ cần gợi ý. Công cụ tự giới hạn số lần và trừ điểm theo luật. Không tự bịa gợi ý hoặc nói đáp án.",
+                parameters: { type: "OBJECT", properties: {} }
               }]
             }],
             systemInstruction: {
@@ -218,6 +258,8 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
                 "Phiên Live này phải hoạt động liên tục từ lúc tạo trận cho đến khi trận kết thúc; không yêu cầu người dùng bật lại ở mỗi câu.",
                 "Ở giai đoạn chuẩn bị, khi một thành viên yêu cầu tạo chủ đề, bài, game, cuộc thi hoặc trận đấu, BẮT BUỘC gọi generate_match đúng một lần. Khi hệ thống thông báo trận đã bắt đầu thì không gọi generate_match nữa.",
                 "Trong lúc thi, bạn là trợ giảng giọng nói: động viên hoặc nhắc luật nhưng tuyệt đối không tiết lộ đáp án của câu hiện tại trước khi cả hai đã trả lời.",
+                "Nếu người chơi đang thi và nói xin gợi ý, BẮT BUỘC gọi request_hint. Chỉ đọc đúng gợi ý server trả về, không thêm thông tin có thể lộ đáp án.",
+                "Khi hệ thống gửi HỆ_THỐNG_AI_CHỦ_ĐỘNG, hãy nói ngay đúng một câu ngắn theo chỉ dẫn rồi tiếp tục lắng nghe.",
                 "Khi nhận thông báo HỆ THỐNG_KẾT_QUẢ_VÒNG, hãy lập tức nhận xét bằng tiếng Việt trong tối đa ba câu: ai đúng/sai hoặc hết giờ, đáp án đúng, và một mẹo tiếng Anh ngắn. Không gọi công cụ.",
                 "Không cần hỏi lại nếu người dùng đã nêu một chủ đề rõ ràng. Sau khi gọi công cụ, chỉ thông báo kết quả thật nhận được từ công cụ.",
                 sessionMode === "setup" ? "Trả lời ngắn gọn, thân thiện bằng giọng Kore của Gemini Live; hỏi hai người muốn luyện chủ đề và trình độ nào." : "Trả lời ngắn gọn, thân thiện bằng giọng Kore của Gemini Live; tập trung hỗ trợ trận hiện tại.",
@@ -233,7 +275,10 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
       socket.onmessage = async (event) => {
         const raw = typeof event.data === "string" ? event.data : event.data instanceof Blob ? await event.data.text() : String(event.data);
         const message = JSON.parse(raw) as LiveMessage;
+        if (message.sessionResumptionUpdate?.newHandle) resumptionHandleRef.current = message.sessionResumptionUpdate.newHandle;
+        if (message.goAway) setOutputTranscript((current) => `${current}\nLexi đang duy trì phiên trợ giảng…`);
         if (message.setupComplete) {
+          reconnectAttemptsRef.current = 0;
           setStatus("listening");
           socket.send(JSON.stringify({ realtimeInput: { text: sessionMode === "setup"
             ? "Hãy chào hai bạn bằng tiếng Việt và hỏi: hôm nay hai bạn muốn học hay thi với nhau chủ đề gì? Chỉ hỏi ngắn gọn rồi chờ câu trả lời."
@@ -250,6 +295,18 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
               return { id, name, response: { result: { status: "already_processed" } } };
             }
             handledToolCallsRef.current.add(id);
+            if (name === "request_hint") {
+              const hintHandler = onRequestHintRef.current;
+              if (!hintHandler) return { id, name, response: { error: "Gợi ý chỉ khả dụng khi một vòng đang diễn ra." } };
+              try {
+                const result = await hintHandler();
+                return result.ok
+                  ? { id, name, response: { result: { status: "success", message: result.message, ...result.data } } }
+                  : { id, name, response: { error: result.message } };
+              } catch (caught) {
+                return { id, name, response: { error: caught instanceof Error ? caught.message : "Không lấy được gợi ý." } };
+              }
+            }
             if (name !== "generate_match") return { id, name, response: { error: `Unsupported tool: ${name}` } };
 
             const brief = typeof functionCall.args?.brief === "string" ? functionCall.args.brief.trim().slice(0, 1000) : "";
@@ -280,7 +337,7 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
         const parts = content.modelTurn?.parts ?? [];
         for (const part of parts) {
           const audio = part.inlineData;
-          if (audio?.data) { setStatus("speaking"); void playAudio(audio.data); }
+          if (audio?.data) { setStatus("speaking"); void playAudio(audio.data, true); }
         }
         if (content.turnComplete) setStatus("listening");
       };
@@ -289,8 +346,15 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
         socketRef.current = null;
         releaseAudio();
         if (!intentionalCloseRef.current) {
-          setError(event.reason || `Gemini Live closed (${event.code})`);
-          setStatus("error");
+          const attempt = reconnectAttemptsRef.current + 1;
+          reconnectAttemptsRef.current = attempt;
+          if (stream.active && attempt <= 5) {
+            setStatus("connecting");
+            window.setTimeout(() => void restartRef.current?.(stream, true), Math.min(5000, 500 * (2 ** (attempt - 1))));
+          } else {
+            setError(event.reason || `Gemini Live closed (${event.code})`);
+            setStatus("error");
+          }
         }
       };
     } catch (caught) {
@@ -300,7 +364,8 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
     }
   }, [playAudio, releaseAudio, roomId, sessionContext, sessionMode, startCapture, status, stopPlayback]);
 
+  useEffect(() => { restartRef.current = start; }, [start]);
   useEffect(() => stop, [stop]);
 
-  return { status, inputTranscript, outputTranscript, error, start, stop, sendText };
+  return { status, inputTranscript, outputTranscript, error, start, stop, sendText, playRemoteAudio };
 }

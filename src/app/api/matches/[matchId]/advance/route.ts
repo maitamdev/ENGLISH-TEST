@@ -21,7 +21,9 @@ async function updateLearningHistory(admin: SupabaseClient, matchId: string, top
   const scoreFields: Record<string, string> = {
     GRAMMAR: "grammar_score", LISTENING: "listening_score", SPELLING: "spelling_score",
     TRANSLATION: "translation_score", VI_TO_EN: "vocabulary_score", EN_TO_VI: "vocabulary_score",
-    CONTEXT: "vocabulary_score", DEFINITION: "vocabulary_score", BOSS: "vocabulary_score"
+    CONTEXT: "vocabulary_score", DEFINITION: "vocabulary_score", BOSS: "vocabulary_score",
+    MULTIPLE_CHOICE: "vocabulary_score", READING: "reading_score", PRONUNCIATION: "pronunciation_score",
+    SPEAKING: "speaking_score", ROLEPLAY: "speaking_score", DEBATE: "speaking_score", WRITING: "writing_score"
   };
   const today = new Date();
   const todayDate = today.toISOString().slice(0, 10);
@@ -51,7 +53,7 @@ async function updateLearningHistory(admin: SupabaseClient, matchId: string, top
       });
     }
 
-    const { data: previous } = await admin.from("user_learning_stats").select("current_streak_days, last_practice_date").eq("user_id", player.user_id).single();
+    const { data: previous } = await admin.from("user_learning_stats").select("current_streak_days, last_practice_date, vocabulary_score, grammar_score, listening_score, spelling_score, translation_score, reading_score, speaking_score, pronunciation_score, writing_score").eq("user_id", player.user_id).single();
     let streak = 1;
     if (previous?.last_practice_date === todayDate) streak = previous.current_streak_days;
     else if (previous?.last_practice_date) {
@@ -59,7 +61,11 @@ async function updateLearningHistory(admin: SupabaseClient, matchId: string, top
       const current = new Date(`${todayDate}T00:00:00Z`);
       if ((current.getTime() - prior.getTime()) / 86_400_000 === 1) streak = previous.current_streak_days + 1;
     }
-    const scores = Object.fromEntries([...grouped].map(([field, value]) => [field, Math.round(value.correct / value.total * 100)]));
+    const scores = Object.fromEntries([...grouped].map(([field, value]) => {
+      const matchScore = Math.round(value.correct / value.total * 100);
+      const oldScore = previous?.[field as keyof typeof previous];
+      return [field, typeof oldScore === "number" ? Math.round(oldScore * 0.7 + matchScore * 0.3) : matchScore];
+    }));
     await admin.from("user_learning_stats").upsert({ user_id: player.user_id, ...scores, current_streak_days: streak, last_practice_date: todayDate, updated_at: today.toISOString() });
   }
 }
@@ -71,7 +77,7 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
   if (!supabase || !admin) return NextResponse.json({ error: "Supabase is not configured" }, { status: 503 });
   const { data: authData } = await supabase.auth.getUser();
   if (!authData.user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  const { data: match } = await supabase.from("matches").select("room_id, topic, status, current_round, round_count, rooms(host_id, status)").eq("id", matchId).single();
+  const { data: match } = await supabase.from("matches").select("room_id, topic, status, current_round, round_count, blueprint, rooms(host_id, status)").eq("id", matchId).single();
   const room = Array.isArray(match?.rooms) ? match?.rooms[0] : match?.rooms;
   if (!match || !room || room.host_id !== authData.user.id) return NextResponse.json({ error: "Only the room host can advance the match" }, { status: 403 });
   if (match.status !== "active") return NextResponse.json({ error: "Match is not active" }, { status: 409 });
@@ -83,7 +89,8 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
 
   if (match.current_round >= match.round_count) {
     const { data: players } = await admin.from("match_players").select("user_id, score").eq("match_id", matchId).order("score", { ascending: false });
-    const winnerId = players && players.length > 1 && players[0].score !== players[1].score ? players[0].user_id : null;
+    const cooperative = (match.blueprint as { settings?: { experience?: string } })?.settings?.experience === "COOP";
+    const winnerId = !cooperative && players && players.length > 1 && players[0].score !== players[1].score ? players[0].user_id : null;
     try { await updateLearningHistory(admin, matchId, match.topic); }
     catch (learningError) { return NextResponse.json({ error: learningError instanceof Error ? learningError.message : "Could not update learning history" }, { status: 500 }); }
     const { error } = await admin.from("matches").update({ status: "completed", winner_id: winnerId, ended_at: new Date().toISOString() }).eq("id", matchId);

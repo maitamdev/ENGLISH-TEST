@@ -22,11 +22,12 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
   if (!roomResult.data) return null;
   const room = roomResult.data;
 
-  const [membersResult, matchResult] = await Promise.all([
+  const [membersResult, matchResult, generationResult] = await Promise.all([
     supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
-    supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("generation_jobs").select("status, stage, total_rounds, completed_rounds, error_message").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle()
   ]);
-  if (membersResult.error || matchResult.error) throw membersResult.error ?? matchResult.error;
+  if (membersResult.error || matchResult.error || generationResult.error) throw membersResult.error ?? matchResult.error ?? generationResult.error;
 
   let match: MatchView | null = null;
   let playerRows: PlayerRow[] = [];
@@ -69,5 +70,20 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
     };
   });
 
-  return { roomId: room.id, code: room.code, hostId: room.host_id, currentUserId: userId, phase: phaseMap[room.status] ?? "idle", members, match };
+  return {
+    roomId: room.id,
+    code: room.code,
+    hostId: room.host_id,
+    currentUserId: userId,
+    phase: phaseMap[room.status] ?? "idle",
+    members,
+    match,
+    generation: generationResult.data ? {
+      status: generationResult.data.status,
+      stage: generationResult.data.stage,
+      totalRounds: generationResult.data.total_rounds,
+      completedRounds: generationResult.data.completed_rounds,
+      errorMessage: generationResult.data.error_message
+    } : null
+  } as RoomBootstrap;
 }

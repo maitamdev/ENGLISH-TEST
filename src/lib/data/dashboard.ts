@@ -5,7 +5,7 @@ import type { DashboardData, DashboardMatch, LearningStatsRecord, ProfileRecord 
 
 type MatchRow = {
   id: string; room_id: string; title: string; level: string; round_count: number;
-  winner_id: string | null; created_at: string; rooms: { code: string } | { code: string }[] | null;
+  winner_id: string | null; status: string; created_at: string; rooms: { code: string } | { code: string }[] | null;
 };
 type PlayerRow = { match_id: string; user_id: string; score: number; profiles: { display_name: string; avatar_url: string | null } | { display_name: string; avatar_url: string | null }[] | null };
 
@@ -14,7 +14,7 @@ function one<T>(value: T | T[] | null): T | null { return Array.isArray(value) ?
 export async function getDashboardData(supabase: SupabaseClient, userId: string): Promise<DashboardData> {
   const [profileResult, statsResult, membershipsResult, vocabularyResult] = await Promise.all([
     supabase.from("profiles").select("id, display_name, username, avatar_url, cefr_estimate").eq("id", userId).single(),
-    supabase.from("user_learning_stats").select("vocabulary_score, grammar_score, listening_score, spelling_score, translation_score, current_streak_days, last_practice_date").eq("user_id", userId).maybeSingle(),
+    supabase.from("user_learning_stats").select("vocabulary_score, grammar_score, listening_score, spelling_score, translation_score, reading_score, speaking_score, pronunciation_score, writing_score, current_streak_days, last_practice_date").eq("user_id", userId).maybeSingle(),
     supabase.from("room_members").select("room_id").eq("user_id", userId),
     supabase.from("user_vocabulary").select("word", { count: "exact", head: true }).eq("user_id", userId).gte("mastery", 80)
   ]);
@@ -26,7 +26,7 @@ export async function getDashboardData(supabase: SupabaseClient, userId: string)
   let winCount = 0;
   if (roomIds.length) {
     const [recentResult, totalResult, winsResult] = await Promise.all([
-      supabase.from("matches").select("id, room_id, title, level, round_count, winner_id, created_at, rooms(code)").in("room_id", roomIds).order("created_at", { ascending: false }).limit(10),
+      supabase.from("matches").select("id, room_id, title, level, round_count, winner_id, status, created_at, rooms(code)").in("room_id", roomIds).order("created_at", { ascending: false }).limit(10),
       supabase.from("matches").select("id", { count: "exact", head: true }).in("room_id", roomIds),
       supabase.from("matches").select("id", { count: "exact", head: true }).in("room_id", roomIds).eq("winner_id", userId)
     ]);
@@ -59,6 +59,7 @@ export async function getDashboardData(supabase: SupabaseClient, userId: string)
       opponentName: opponentProfile?.display_name ?? null,
       opponentAvatar: opponentProfile?.avatar_url ?? null,
       winnerId: match.winner_id,
+      status: match.status,
       createdAt: match.created_at
     };
   });

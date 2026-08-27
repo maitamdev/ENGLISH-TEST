@@ -14,11 +14,52 @@ export type QuestionMode =
   | "EN_TO_VI"
   | "LISTENING"
   | "SPELLING"
+  | "MULTIPLE_CHOICE"
+  | "READING"
   | "CONTEXT"
   | "GRAMMAR"
   | "TRANSLATION"
   | "DEFINITION"
+  | "PRONUNCIATION"
+  | "SPEAKING"
+  | "ROLEPLAY"
+  | "DEBATE"
+  | "WRITING"
   | "BOSS";
+
+export type MatchExperience = "DUEL" | "COOP" | "PRACTICE";
+export type AiPresence = "QUIET" | "BALANCED" | "ACTIVE";
+export type FeedbackStyle = "CONCISE" | "TEACHER" | "DETAILED";
+export type AnswerStrictness = "LENIENT" | "STANDARD" | "STRICT";
+export type ListeningAccent = "US" | "UK" | "AU";
+
+export type MatchSettings = {
+  experience: MatchExperience;
+  aiPresence: AiPresence;
+  feedbackStyle: FeedbackStyle;
+  strictness: AnswerStrictness;
+  adaptiveDifficulty: boolean;
+  allowHints: boolean;
+  maxHints: number;
+  hintPenalty: number;
+  shuffleQuestions: boolean;
+  shuffleOptions: boolean;
+  listeningAccent: ListeningAccent;
+  listeningSpeed: 0.75 | 1 | 1.25;
+  replayLimit: number;
+  speakingSeconds: number;
+  answerReveal: "AFTER_BOTH";
+};
+
+export type GameGenerationPreferences = {
+  presetId?: string;
+  rounds?: number;
+  timePerQuestion?: number;
+  level?: "A1" | "A2" | "B1" | "B2" | "C1" | "C2" | "Mixed";
+  difficulty?: "Easy" | "Medium" | "Hard";
+  modes?: { type: QuestionMode; count: number }[];
+  settings?: Partial<MatchSettings>;
+};
 
 export type PublicQuestion = {
   id: string;
@@ -40,6 +81,7 @@ export type BattleBlueprint = {
   modes: { type: QuestionMode; count: number }[];
   speedScoring: boolean;
   streakBonus: boolean;
+  settings?: MatchSettings;
 };
 
 export type Player = {

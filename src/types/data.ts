@@ -14,6 +14,10 @@ export type LearningStatsRecord = {
   listening_score: number | null;
   spelling_score: number | null;
   translation_score: number | null;
+  reading_score: number | null;
+  speaking_score: number | null;
+  pronunciation_score: number | null;
+  writing_score: number | null;
   current_streak_days: number;
   last_practice_date: string | null;
 };
@@ -29,6 +33,7 @@ export type DashboardMatch = {
   opponentName: string | null;
   opponentAvatar: string | null;
   winnerId: string | null;
+  status: string;
   createdAt: string;
 };
 
@@ -57,8 +62,25 @@ export type SubmissionView = {
   answer: string;
   correct: boolean;
   timedOut?: boolean;
+  matchType?: "accepted" | "minor_typo" | "incorrect";
+  matchedAnswer?: string | null;
   responseMs: number;
   points: number;
+  hintsUsed?: number;
+  rubricScore?: number | null;
+  assessment?: {
+    content?: number;
+    pronunciation?: number;
+    fluency?: number;
+    grammar?: number;
+    vocabulary?: number;
+    overall?: number;
+    task?: number;
+    coherence?: number;
+    feedbackVi?: string;
+    strengths?: string[];
+    improvements?: string[];
+  } | null;
 };
 
 export type MatchView = {
@@ -91,6 +113,13 @@ export type RoomBootstrap = {
   phase: RoomPhase;
   members: RoomMemberData[];
   match: MatchView | null;
+  generation: {
+    status: "queued" | "generating" | "persisting" | "completed" | "failed";
+    stage: string;
+    totalRounds: number | null;
+    completedRounds: number;
+    errorMessage: string | null;
+  } | null;
 };
 
 export type VocabularyRecord = {
