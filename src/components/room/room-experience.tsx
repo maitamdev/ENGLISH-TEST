@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { 
   ArrowRight, AudioLines, Bot, CheckCircle2, Copy, Crown, 
@@ -120,16 +120,81 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const onlineRef = useRef<string[]>([]);
   const realtimeStateRef = useRef(realtimeState);
   const membersRef = useRef<RoomMemberData[]>(initial.members);
+  const deliveredPhasesRef = useRef(new Set<string>());
+  const [fairness, setFairness] = useState<{ questionId: string; decision: string; participantCount: number; inputSkewMs: number | null } | null>(null);
+
+  const acknowledgeDelivery = useCallback(async (phase: "received" | "rendered" | "input_enabled" | "audio_ready" | "answer_sent") => {
+    if (!activeMatchId || !activeQuestion || !clientSessionIdRef.current) return;
+    const key = `${activeQuestion.id}:${phase}`;
+    if (deliveredPhasesRef.current.has(key)) return;
+    const network = (navigator as Navigator & { connection?: { effectiveType?: string } }).connection;
+    try {
+      const response = await fetch(`/api/matches/${activeMatchId}/delivery`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questionId: activeQuestion.id,
+          clientSessionId: clientSessionIdRef.current,
+          phase,
+          clientReportedAt: new Date().toISOString(),
+          metrics: {
+            clockOffsetMs: Math.round(clockOffsetRef.current * 1000) / 1000,
+            clockRttMs: Math.round(clockRttRef.current * 1000) / 1000,
+            realtimeState: realtimeStateRef.current,
+            webrtcState: peerRef.current?.connectionState ?? "new",
+            visibility: document.visibilityState,
+            effectiveType: network?.effectiveType
+          }
+        }),
+        cache: "no-store",
+        keepalive: phase === "answer_sent"
+      });
+      const body = await response.json().catch(() => ({})) as { decision?: string; participantCount?: number; inputSkewMs?: number | null };
+      if (!response.ok) return;
+      deliveredPhasesRef.current.add(key);
+      if (body.decision) setFairness({ questionId: activeQuestion.id, decision: body.decision, participantCount: body.participantCount ?? 0, inputSkewMs: body.inputSkewMs ?? null });
+    } catch { /* Fairness telemetry must never block answering. */ }
+  }, [activeMatchId, activeQuestion]);
 
   useEffect(() => { onlineRef.current = onlineIds; }, [onlineIds]);
   useEffect(() => { realtimeStateRef.current = realtimeState; }, [realtimeState]);
   useEffect(() => { membersRef.current = room.members; }, [room.members]);
+  useEffect(() => { streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = !muted && !currentMember?.moderationMuted; }); }, [currentMember?.moderationMuted, muted]);
   useEffect(() => {
     const stored = window.sessionStorage.getItem(`lexiduel:session:${room.roomId}`);
     const sessionId = stored && /^[0-9a-f-]{36}$/iu.test(stored) ? stored : crypto.randomUUID();
     window.sessionStorage.setItem(`lexiduel:session:${room.roomId}`, sessionId);
     clientSessionIdRef.current = sessionId;
   }, [room.roomId]);
+
+  useEffect(() => {
+    if (activePhase !== "battle" || !activeQuestion) return;
+    void acknowledgeDelivery("received");
+    const frame = window.requestAnimationFrame(() => void acknowledgeDelivery("rendered"));
+    return () => window.cancelAnimationFrame(frame);
+  }, [acknowledgeDelivery, activePhase, activeQuestion]);
+
+  useEffect(() => {
+    if (activePhase !== "battle" || !activeQuestion || !activeMatchId || fairness?.questionId === activeQuestion.id && fairness.participantCount === 2) return;
+    let active = true;
+    let attempts = 0;
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const response = await fetch(`/api/matches/${activeMatchId}/delivery?questionId=${activeQuestion.id}`, { cache: "no-store" });
+        const body = await response.json() as { assessment?: { question_id?: string; decision?: string; participant_count?: number; input_skew_ms?: number | null } | null };
+        if (active && response.ok && body.assessment?.decision) setFairness({ questionId: body.assessment.question_id ?? activeQuestion.id, decision: body.assessment.decision, participantCount: body.assessment.participant_count ?? 0, inputSkewMs: body.assessment.input_skew_ms ?? null });
+      } catch { /* The receipt POST remains the primary signal. */ }
+      if (attempts >= 12) window.clearInterval(timer);
+    };
+    const timer = window.setInterval(() => void poll(), 750);
+    void poll();
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activeMatchId, activePhase, activeQuestion, fairness?.participantCount, fairness?.questionId]);
+
+  useEffect(() => {
+    if (activePhase === "battle" && activeQuestion && roundBeginsIn === 0 && seconds > 0) void acknowledgeDelivery("input_enabled");
+  }, [acknowledgeDelivery, activePhase, activeQuestion, roundBeginsIn, seconds]);
 
   useEffect(() => {
     let active = true;
@@ -141,6 +206,20 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       .catch(() => undefined);
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    const resume = () => { setRealtimeState("reconnecting"); router.refresh(); };
+    window.addEventListener("lexiduel:app-resume", resume);
+    return () => window.removeEventListener("lexiduel:app-resume", resume);
+  }, [router]);
+
+  useEffect(() => {
+    if (activePhase !== "battle" || !("wakeLock" in navigator)) return;
+    let released = false;
+    let lock: { release: () => Promise<void> } | null = null;
+    void (navigator as Navigator & { wakeLock: { request: (type: "screen") => Promise<{ release: () => Promise<void> }> } }).wakeLock.request("screen").then((value) => { if (released) void value.release(); else lock = value; }).catch(() => undefined);
+    return () => { released = true; if (lock) void lock.release(); };
+  }, [activePhase]);
 
   useEffect(() => {
     let stopped = false;
@@ -498,6 +577,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       autoSubmitTimerRef.current = setTimeout(() => {
         if (timeoutSubmissionRef.current === questionKey) return;
         timeoutSubmissionRef.current = questionKey;
+        void acknowledgeDelivery("answer_sent");
         void fetch("/api/answers", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ questionId: questionKey, answer: "⏱ Hết giờ" }) })
           .then(async (r) => { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Submit failed"); router.refresh(); })
           .catch((error) => { timeoutSubmissionRef.current = ""; showError(error); });
@@ -518,7 +598,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
         router.refresh();
       }, remainingUntilDeadline + (rubricQuestion ? 16_000 : 3000));
     }
-  }, [activePhase, activeQuestion, activeRoundDeadlineAt, activeRoundStartedAt, hasSubmittedCurrent, isHost, room.match, router]);
+  }, [acknowledgeDelivery, activePhase, activeQuestion, activeRoundDeadlineAt, activeRoundStartedAt, hasSubmittedCurrent, isHost, room.match, router]);
 
   // Clean up timers when leaving battle phase
   useEffect(() => {
@@ -545,6 +625,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   async function getMicrophoneStream() {
     if (streamRef.current?.active) return streamRef.current;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    stream.getAudioTracks().forEach((track) => { track.enabled = !currentMember?.moderationMuted; });
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = stream;
     setMicEnabled(true);
@@ -694,7 +775,14 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   async function submit() {
     const answer = room.match?.question ? answerDrafts[room.match.question.id] ?? "" : "";
     if (!room.match?.question || !answer.trim()) return;
-    await run(async () => { await api("/api/answers", { method: "POST", body: JSON.stringify({ questionId: room.match!.question!.id, answer }) }); toast.success("Answer submitted. Waiting for the other player."); });
+    await run(async () => { await acknowledgeDelivery("answer_sent"); await api("/api/answers", { method: "POST", body: JSON.stringify({ questionId: room.match!.question!.id, answer }) }); toast.success("Answer submitted. Waiting for the other player."); });
+  }
+
+  async function moderateMember(userId: string, action: "mute" | "unmute" | "kick") {
+    await run(async () => {
+      await api(`/api/rooms/${room.roomId}/moderate`, { method: "POST", body: JSON.stringify({ userId, action, reason: "Room host moderation" }) });
+      toast.success(action === "kick" ? "Đã đưa thành viên khỏi phòng." : action === "mute" ? "Đã tắt micro thành viên." : "Đã cho phép thành viên bật micro.");
+    });
   }
 
   async function fetchHint() {
@@ -730,8 +818,11 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const roundExpired = Boolean(activeQuestion && activeRoundStartedAt && roundBeginsIn === 0 && seconds <= 0);
   const resolutionKey = room.match ? `${room.match.id}:${room.match.currentRound}` : "";
   const resolution = resolutionState?.key === resolutionKey ? resolutionState.data : null;
+  const moderationTarget = isHost ? room.members.find((member) => member.userId !== room.currentUserId) : null;
 
   return <main className="room-page" suppressHydrationWarning>
+    {currentMember?.moderationMuted && <div className="moderation-notice"><MicOff size={15} /> Host đã tắt micro của bạn trong phòng này.</div>}
+    {moderationTarget && <div className="room-host-controls" aria-label="Host moderation"><span>Host controls · {moderationTarget.displayName}</span><button type="button" onClick={() => void moderateMember(moderationTarget.userId, moderationTarget.moderationMuted ? "unmute" : "mute")}><MicOff size={13} /> {moderationTarget.moderationMuted ? "Cho bật mic" : "Tắt mic"}</button><button type="button" className="danger" onClick={() => void moderateMember(moderationTarget.userId, "kick")}><LogOut size={13} /> Mời ra</button></div>}
     <audio ref={remoteAudioRef} autoPlay muted={deafened} />
     <header className="room-header"><div className="app-container room-header-inner"><div className="room-id"><Brand /><div className="room-code"><span>Room code</span><button onClick={() => { void navigator.clipboard.writeText(room.code); toast.success("Room code copied."); }}>{room.code}<Copy size={13} /></button></div></div><div className="room-actions"><button className="button button-secondary" onClick={() => setAudioOpen(true)}><Settings size={16} /><span>Settings</span></button><button className="button button-danger" onClick={leave} disabled={busy}><LogOut size={16} /><span>Leave</span></button></div></div></header>
     <section className="room-main"><div className="app-container room-content"><div className="room-status-line"><div className="status"><span className={`status-dot ${realtimeState === "reconnecting" ? "warning" : ""}`} /> {connectedIds.length} online <span className="room-status-copy">{realtimeState === "connected" ? `Realtime · host epoch ${room.hostEpoch}` : "Đang nối lại Realtime"}</span></div><div className="room-status-copy" suppressHydrationWarning>{gemini.status === "listening" ? voiceConnected ? "Gemini đang nghe cả hai bạn" : "Gemini đang nghe người bật AI" : gemini.status === "speaking" ? "Gemini đang nói" : remoteAiActive ? "Gemini đang chạy trên máy người còn lại" : voiceConnected ? "Đàm thoại trực tiếp đã kết nối" : micEnabled ? "Đang chờ kết nối thoại" : "Micro đang tắt"}</div></div>{renderPhase()}</div></section>
@@ -741,6 +832,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
 
   function renderPhase() {
     const phase = room.phase;
+    const roundFairness = fairness?.questionId === room.match?.question?.id ? fairness : null;
     if (phase === "idle") return <RoomGrid members={room.members} online={connectedIds}><Bot size={32} className="text-accent" /><h1>Phòng đã sẵn sàng.</h1><p>Hai bạn có thể nói chuyện bình thường. Khi đủ hai người, một trong hai có thể bật Gemini để chọn nội dung học hoặc thi.</p>{room.members.length === 2 ? <button className="button button-primary" onClick={() => run(() => status("AI_DISCUSSION"))} disabled={busy}><Play size={18} /> Bật Gemini và setup trận</button> : <p className="waiting-copy">Gửi mã phòng cho bạn của bạn để bắt đầu.</p>}</RoomGrid>;
     if (phase === "ai-joining") return <Loading title="Connecting to Gemini Live" detail="Establishing low-latency voice connection with Lexi AI Host..." />;
     if (phase === "ai-discussion") return <RoomGrid members={room.members} online={connectedIds}>
@@ -774,7 +866,18 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     }
     if (phase === "countdown") return <section className="surface center-stage"><div className="countdown">{countdown}</div><p>Máy chủ đang đồng bộ thời điểm mở câu cho cả hai người.</p></section>;
     if (phase === "battle" && room.match?.question && roundBeginsIn > 0) return <div className="battle-shell"><Scorebar members={room.members} title={room.match.title} round={room.match.currentRound} rounds={room.match.roundCount} seconds={room.match.question.timeLimit} /><section className="surface question-stage"><span className="mode-label">SYNCHRONIZING</span><div className="countdown">{roundBeginsIn}</div><h2>Cả hai sẽ bắt đầu cùng lúc</h2><p>Đề và ô trả lời sẽ mở theo đồng hồ máy chủ, không phụ thuộc máy nào nhận Realtime trước.</p></section></div>;
-    if (phase === "battle" && room.match?.question) return <div className="battle-shell"><Scorebar members={room.members} title={room.match.title} round={room.match.currentRound} rounds={room.match.roundCount} seconds={seconds} /><section className="surface question-stage"><span className="mode-label">{room.match.question.mode.replaceAll("_", " ")}</span>{submitted ? <div className="answer-submitted"><CheckCircle2 size={28} className="text-accent" /><h2>Đã nộp đáp án</h2><p>Gemini vẫn đang hoạt động. Đang chờ người còn lại.</p></div> : roundExpired ? <div className="answer-submitted"><XCircle size={28} className="review-wrong" /><h2>Hết giờ</h2><p>Đang ghi nhận lượt này và chờ người còn lại.</p></div> : <QuestionPlayer key={room.match.question.id} question={room.match.question} value={answer} settings={resolveMatchSettings(room.match.blueprint)} seconds={seconds} busy={busy} onChange={(value) => setAnswerDrafts((drafts) => ({ ...drafts, [room.match!.question!.id]: value }))} onSubmit={() => void submit()} onSpeakingSubmitted={() => { toast.success("Gemini đã chấm phần nói. Đang chờ người còn lại."); router.refresh(); }} onWritingSubmitted={() => { toast.success("Gemini đã chấm bài viết. Đang chờ người còn lại."); router.refresh(); }} onHint={requestHint} />}<div className="answer-help">Điểm được tính theo từng kỹ năng. Câu nói và viết ưu tiên chất lượng; câu nhanh ưu tiên độ chính xác trước tốc độ.</div><div className="battle-coach"><div className="gemini-controls">{gemini.status === "off" || gemini.status === "error" ? <button type="button" className="button button-secondary" onClick={startGemini} disabled={remoteAiActive}><Bot size={17} /> {remoteAiActive ? "Gemini đang hoạt động" : "Bật Gemini trợ giảng"}</button> : <button type="button" className="button button-danger" onClick={stopGemini}><MicOff size={17} /> Tắt Gemini</button>}<span className={`gemini-status ${remoteAiActive ? "listening" : gemini.status}`}>{remoteAiActive ? "shared" : gemini.status}</span></div>{gemini.error && <div className="gemini-error">{gemini.error}</div>}{gemini.outputTranscript && <div className="ai-transcript">{gemini.outputTranscript}</div>}</div></section></div>;
+    if (phase === "battle" && room.match?.question) return <div className="battle-shell">
+      <Scorebar members={room.members} title={room.match.title} round={room.match.currentRound} rounds={room.match.roundCount} seconds={seconds} />
+      <section className="surface question-stage">
+        <div className="question-stage-meta">
+          <span className="mode-label">{room.match.question.mode.replaceAll("_", " ")}</span>
+          <span className={`fairness-badge fairness-${roundFairness?.decision ?? "pending"}`}>{roundFairness?.participantCount === 2 ? roundFairness.decision === "fair" ? "Hai bên đã đồng bộ" : roundFairness.decision === "compromised" ? "Đường truyền lệch lớn" : "Đang kiểm tra độ trễ" : `${roundFairness?.participantCount ?? 0}/2 đã nhận câu`}</span>
+        </div>
+        {submitted ? <div className="answer-submitted"><CheckCircle2 size={28} className="text-accent" /><h2>Đã nộp đáp án</h2><p>Gemini vẫn đang hoạt động. Đang chờ người còn lại.</p></div> : roundExpired ? <div className="answer-submitted"><XCircle size={28} className="review-wrong" /><h2>Hết giờ</h2><p>Đang ghi nhận lượt này và chờ người còn lại.</p></div> : <QuestionPlayer key={room.match.question.id} question={room.match.question} value={answer} settings={resolveMatchSettings(room.match.blueprint)} seconds={seconds} busy={busy} onChange={(value) => setAnswerDrafts((drafts) => ({ ...drafts, [room.match!.question!.id]: value }))} onSubmit={() => void submit()} onSpeakingSubmitted={() => { void acknowledgeDelivery("answer_sent"); toast.success("Gemini đã chấm phần nói. Đang chờ người còn lại."); router.refresh(); }} onWritingSubmitted={() => { void acknowledgeDelivery("answer_sent"); toast.success("Gemini đã chấm bài viết. Đang chờ người còn lại."); router.refresh(); }} onAudioReady={() => void acknowledgeDelivery("audio_ready")} onHint={requestHint} />}
+        <div className="answer-help">Điểm được tính theo từng kỹ năng. Câu nói và viết ưu tiên chất lượng; câu nhanh ưu tiên độ chính xác trước tốc độ.{roundFairness?.inputSkewMs != null ? ` Độ lệch mở input: ${roundFairness.inputSkewMs}ms.` : ""}</div>
+        <div className="battle-coach"><div className="gemini-controls">{gemini.status === "off" || gemini.status === "error" ? <button type="button" className="button button-secondary" onClick={startGemini} disabled={remoteAiActive}><Bot size={17} /> {remoteAiActive ? "Gemini đang hoạt động" : "Bật Gemini trợ giảng"}</button> : <button type="button" className="button button-danger" onClick={stopGemini}><MicOff size={17} /> Tắt Gemini</button>}<span className={`gemini-status ${remoteAiActive ? "listening" : gemini.status}`}>{remoteAiActive ? "shared" : gemini.status}</span></div>{gemini.error && <div className="gemini-error">{gemini.error}</div>}{gemini.outputTranscript && <div className="ai-transcript">{gemini.outputTranscript}</div>}</div>
+      </section>
+    </div>;
     if (phase === "round-result" && room.match) return <RoundResult room={room} data={resolution} currentReady={Boolean(currentMember?.isReady)} readyCount={readyCount} busy={busy} toggleReady={() => run(() => api(`/api/matches/${room.match!.id}/ready-next`, { method: "PATCH", body: JSON.stringify({ ready: !currentMember?.isReady }) }))} />;
     return <Result room={room} isHost={isHost} busy={busy} rematch={() => run(() => status("AI_DISCUSSION"))} />;
   }

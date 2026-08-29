@@ -20,13 +20,17 @@ Repository không có seed, mock user, mock room, mock question, điểm mẫu h
 - Bạn bè theo username chính xác, lời mời phòng, skill Elo rating, lịch sử rating và Community UI.
 - Privacy preferences, JSON export riêng tư, xóa tài khoản theo queue, telemetry có opt-out, health/maintenance workers.
 - Tatoeba, CMUdict, Meta CoVoST và Facebook Page được phép; provenance và license đến từng record/câu hỏi.
+- Delivery receipts theo từng pha (`received`, `rendered`, `input_enabled`, `audio_ready`, `answer_sent`) và fairness verdict được tính ở PostgreSQL, giúp phát hiện lệch realtime thay vì đoán từ UI.
+- AI Quality Gate có policy/prompt version, audit từng batch và bộ eval do quản trị viên tự tạo; không có test case giả được seed vào database.
+- Content Admin Studio, Operations Console và Trust & Safety queue dùng trực tiếp dữ liệu Supabase để import, moderation, điều tra report và xử lý alert.
+- PWA có lifecycle reconnect, wake lock trong trận, Web Push lời mời phòng và tự vô hiệu subscription đã hết hạn.
 
 ## Cài Supabase
 
 1. Tạo project Supabase.
 2. Bật Anonymous Sign-Ins trong Authentication. Google OAuth là tùy chọn.
 3. Chạy `supabase/schema.sql`, sau đó các migration đúng thứ tự trong `supabase/README.md`.
-4. Chạy `supabase/tests/production_contracts.sql` để kiểm tra contract bảo mật và schema.
+4. Chạy `supabase/tests/production_contracts.sql`, sau đó `supabase/tests/production_verification_contracts.sql` để kiểm tra contract bảo mật, fairness, admin, safety và quality gate.
 5. Lấy Project URL, publishable key và secret/service-role key.
 
 Không chạy `schema.sql` lần hai trên cùng project. Các migration không chèn dữ liệu học.
@@ -44,6 +48,7 @@ GROQ_MODEL=openai/gpt-oss-20b
 GEMINI_API_KEY=YOUR_GEMINI_KEY
 CRON_SECRET=LONG_RANDOM_SECRET
 CONTENT_IMPORT_SECRET=ANOTHER_LONG_RANDOM_SECRET
+PLATFORM_ADMIN_USER_IDS=YOUR_AUTH_USER_UUID
 ```
 
 Không thêm tiền tố `NEXT_PUBLIC_` cho Supabase secret, Groq, Gemini, TURN secret, Facebook token hoặc worker secret.
@@ -90,12 +95,36 @@ Post Facebook được lưu ở trạng thái `pending`. Duyệt/reject bằng `
 
 Chi tiết license và quy tắc provenance nằm trong `docs/DATA_SOURCES.md`.
 
+## Platform Admin và kiểm soát chất lượng
+
+Để bootstrap chủ sở hữu đầu tiên, đặt UUID Supabase Auth của bạn vào `PLATFORM_ADMIN_USER_IDS` (nhiều UUID phân cách bằng dấu phẩy). Sau khi migration `20260830_production_verification.sql` được chạy, owner có thể mở:
+
+- `/admin/content`: chạy importer hợp pháp, bật/tắt nguồn và duyệt provenance.
+- `/admin/ai-evals`: tạo evaluation case bằng yêu cầu thật, chạy Groq thật và xem quality checks/version.
+- `/admin/operations`: theo dõi queue, telemetry, reconnect, audio, fairness và alert bền vững.
+- `/admin/safety`: nhận xử lý report, ghi kết quả điều tra và lưu quyết định có audit trail.
+
+Không có admin mặc định và migration không tự cấp quyền cho tài khoản nào. Có thể thêm admin lâu dài trực tiếp vào `platform_admins`, sau đó bỏ bootstrap env nếu muốn.
+
+## Web Push
+
+Web Push là tùy chọn. Tạo một VAPID key pair rồi đặt cùng một public key ở client và server:
+
+```dotenv
+NEXT_PUBLIC_VAPID_PUBLIC_KEY=YOUR_PUBLIC_VAPID_KEY
+VAPID_PRIVATE_KEY=YOUR_PRIVATE_VAPID_KEY
+VAPID_SUBJECT=mailto:admin@your-domain.com
+```
+
+Trình duyệt chỉ đăng ký sau khi người dùng chủ động bấm cho phép. Khi có lời mời phòng, server gửi notification thật và ghi trạng thái delivery; endpoint 404/410 sẽ tự vô hiệu subscription cũ.
+
 ## Chạy và kiểm tra cuối
 
 ```bash
 npm install
 npm run lint
 npm run typecheck
+npm run test
 npm run build
 ```
 
@@ -115,5 +144,6 @@ Test thứ hai gọi Groq/Gemini thật, tạo một trận 5 câu và kiểm tr
 3. Thêm `https://YOUR_DOMAIN/auth/callback` vào Supabase Auth redirect allow list.
 4. Deploy, gọi `/api/internal/health` với `HEALTHCHECK_SECRET`, rồi test bằng hai browser/profile khác nhau.
 5. Kiểm tra TURN relay trên ít nhất một mạng di động và một mạng Wi-Fi khác.
+6. Mở `/admin/operations`, tạo alert rule phù hợp hạ tầng và chạy Evaluate; hệ thống không áp quota hay chặn người dùng theo các rule này.
 
 Xem `docs/ARCHITECTURE.md` để biết state machine, ranh giới bảo mật và data flow.

@@ -20,6 +20,7 @@ type Props = {
   onSubmit: () => void;
   onSpeakingSubmitted: () => void;
   onWritingSubmitted: () => void;
+  onAudioReady?: () => void;
   onHint?: () => Promise<string | null>;
 };
 
@@ -111,12 +112,15 @@ function ListeningQuestion(props: Props) {
   </>;
 }
 
-function AudioConsole({ question, settings }: Pick<Props, "question" | "settings">) {
+function AudioConsole({ question, settings, onAudioReady }: Pick<Props, "question" | "settings" | "onAudioReady">) {
   const [plays, setPlays] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const onAudioReadyRef = useRef(onAudioReady);
   const limit = Number(question.publicData?.replayLimit ?? settings.replayLimit);
+
+  useEffect(() => { onAudioReadyRef.current = onAudioReady; }, [onAudioReady]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -136,6 +140,7 @@ function AudioConsole({ question, settings }: Pick<Props, "question" | "settings
         const audio = new Audio(objectUrl);
         audio.playbackRate = settings.listeningSpeed;
         audioRef.current = audio;
+        onAudioReadyRef.current?.();
       })
       .catch((caught: Error) => { if (caught.name !== "AbortError") setError(caught.message); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });

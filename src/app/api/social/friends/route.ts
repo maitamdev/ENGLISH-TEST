@@ -19,7 +19,11 @@ export async function POST(request: Request) {
   const { data: privacy } = await admin.from("privacy_preferences").select("allow_social_discovery").eq("user_id", peer.id).maybeSingle();
   if (privacy?.allow_social_discovery === false) return NextResponse.json({ error: "Người dùng này đã tắt tìm kiếm cộng đồng" }, { status: 404 });
   if (peer.id === authData.user.id) return NextResponse.json({ error: "Bạn không thể kết bạn với chính mình" }, { status: 409 });
-  const { data: existing } = await admin.from("friendships").select("id, status").or(`and(requester_id.eq.${authData.user.id},addressee_id.eq.${peer.id}),and(requester_id.eq.${peer.id},addressee_id.eq.${authData.user.id})`).maybeSingle();
+  const [{ data: existing }, { data: blocked }] = await Promise.all([
+    admin.from("friendships").select("id, status").or(`and(requester_id.eq.${authData.user.id},addressee_id.eq.${peer.id}),and(requester_id.eq.${peer.id},addressee_id.eq.${authData.user.id})`).maybeSingle(),
+    admin.from("user_blocks").select("blocker_id").or(`and(blocker_id.eq.${authData.user.id},blocked_id.eq.${peer.id}),and(blocker_id.eq.${peer.id},blocked_id.eq.${authData.user.id})`).limit(1).maybeSingle()
+  ]);
+  if (blocked) return NextResponse.json({ error: "Không thể gửi lời mời giữa hai tài khoản đã chặn nhau" }, { status: 403 });
   if (existing?.status === "accepted") return NextResponse.json({ error: "Hai bạn đã là bạn bè" }, { status: 409 });
   if (existing?.status === "pending" || existing?.status === "blocked") return NextResponse.json({ error: existing.status === "blocked" ? "Không thể gửi lời mời cho quan hệ này" : "Đã có lời mời đang chờ" }, { status: 409 });
   if (existing?.status === "declined") {

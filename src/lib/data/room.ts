@@ -11,7 +11,7 @@ const phaseMap: Record<string, RoomPhase> = {
   ROUND_RESOLVING: "round-result", ROUND_RESULT: "round-result", MATCH_RESULT: "result", AI_REVIEW: "result"
 };
 
-type MemberRow = { user_id: string; is_ready: boolean; connection_state: string; joined_at: string; last_seen_at: string; device_state: Record<string, unknown> | null; connection_quality: Record<string, unknown> | null; profiles: { display_name: string; avatar_url: string | null } | { display_name: string; avatar_url: string | null }[] | null };
+type MemberRow = { user_id: string; is_ready: boolean; connection_state: string; joined_at: string; last_seen_at: string; device_state: Record<string, unknown> | null; connection_quality: Record<string, unknown> | null; moderation_muted: boolean; profiles: { display_name: string; avatar_url: string | null } | { display_name: string; avatar_url: string | null }[] | null };
 type PlayerRow = { user_id: string; score: number; current_streak: number };
 
 function one<T>(value: T | T[] | null): T | null { return Array.isArray(value) ? value[0] ?? null : value; }
@@ -23,7 +23,7 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
   const room = roomResult.data;
 
   const [membersResult, matchResult, generationResult, aiSessionResult] = await Promise.all([
-    supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, last_seen_at, device_state, connection_quality, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
+    supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, last_seen_at, device_state, connection_quality, moderation_muted, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
     supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, round_deadline_at, round_epoch, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("generation_jobs").select("status, stage, total_rounds, completed_rounds, error_message, updated_at").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("ai_sessions").select("id, coordinator_id, heartbeat_at").eq("room_id", room.id).is("ended_at", null).order("started_at", { ascending: false }).limit(1).maybeSingle()
@@ -69,7 +69,7 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
       userId: member.user_id, displayName: profile?.display_name ?? "User", avatarUrl: profile?.avatar_url ?? null,
       isReady: member.is_ready, connectionState: member.connection_state, joinedAt: member.joined_at,
       score: player?.score ?? 0, streak: player?.current_streak ?? 0,
-      lastSeenAt: member.last_seen_at, deviceState: member.device_state ?? {}, connectionQuality: member.connection_quality ?? {}
+      lastSeenAt: member.last_seen_at, deviceState: member.device_state ?? {}, connectionQuality: member.connection_quality ?? {}, moderationMuted: member.moderation_muted
     };
   });
 

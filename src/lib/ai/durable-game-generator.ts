@@ -7,6 +7,7 @@ import { QUESTION_GENERATION_POLICY } from "./question-generation-policy";
 import { DEFAULT_MATCH_SETTINGS, getMatchPreset } from "@/lib/game/match-presets";
 import { recordTelemetry } from "@/lib/observability/telemetry";
 import { battleBlueprintSchema, gameGenerationRequestSchema, generatedQuestionSchema, matchSettingsSchema, type BattleBlueprintInput } from "@/lib/validation/game";
+import { assessQuestionBatch, QUESTION_PROMPT_VERSION, QUESTION_QUALITY_POLICY_VERSION, type QualityReport } from "./question-quality";
 
 type GeneratedQuestion = z.infer<typeof generatedQuestionSchema>;
 type JobRow = {
@@ -28,7 +29,7 @@ type JobState = {
 };
 
 class ProviderFailure extends Error {
-  constructor(message: string, readonly code: string, readonly retryAfterSeconds = 20) { super(message); }
+  constructor(message: string, readonly code: string, readonly retryAfterSeconds = 20, readonly qualityReport?: QualityReport) { super(message); }
 }
 
 function requestedRoundCount(request: string) {
@@ -191,6 +192,11 @@ async function buildQuestionBatch(request: z.infer<typeof gameGenerationRequestS
   const previousAnswers = new Set(previous.map((item) => answerKey(item.canonicalAnswer)));
   const answers = parsed.data.map((item) => answerKey(item.canonicalAnswer));
   if (answers.some((answer, index) => !answer || previousAnswers.has(answer) || answers.indexOf(answer) !== index)) throw new ProviderFailure("Question batch contained duplicate answers", "duplicate_batch", 5);
+  const quality = assessQuestionBatch(parsed.data, previous, sourceIds);
+  if (!quality.passed) {
+    const failures = quality.checks.filter((check) => !check.passed && check.severity === "error").slice(0, 4).map((check) => check.code).join(", ");
+    throw new ProviderFailure(`Question batch failed quality gate: ${failures || "score below threshold"}`, "quality_gate", 5, quality);
+  }
   return parsed.data;
 }
 
@@ -245,6 +251,7 @@ export async function processNextGenerationJob() {
 
   let completed = 0;
   let nextRound = 1;
+  let activeBatchStart: number | null = null;
   try {
     const request = gameGenerationRequestSchema.parse(job.request_payload);
     const { data: storedState } = await admin.from("generation_job_states").select("blueprint, mode_schedule, generated_questions").eq("job_id", job.id).maybeSingle();
@@ -264,9 +271,22 @@ export async function processNextGenerationJob() {
     completed = start;
     nextRound = start + 1;
     if (start < state.blueprint.rounds) {
+      activeBatchStart = start + 1;
       const modes = state.mode_schedule.slice(start, Math.min(start + job.batch_size, state.blueprint.rounds));
       const sourceContext = await loadSourceContext(admin, modes);
       const batch = await buildQuestionBatch(request, state.blueprint, modes, state.generated_questions, sourceContext);
+      const sourceIds = new Set(sourceContext.flatMap((row) => row && typeof row === "object" && "id" in row && typeof row.id === "string" ? [row.id] : []));
+      const quality = assessQuestionBatch(batch, state.generated_questions, sourceIds);
+      await admin.from("question_quality_audits").upsert({
+        generation_job_id: job.id,
+        batch_round_start: start + 1,
+        prompt_version: QUESTION_PROMPT_VERSION,
+        policy_version: QUESTION_QUALITY_POLICY_VERSION,
+        passed: quality.passed,
+        score: quality.score,
+        checks: quality.checks,
+        content_fingerprint: quality.fingerprint
+      }, { onConflict: "generation_job_id,batch_round_start,prompt_version" });
       state.generated_questions.push(...batch);
       completed = state.generated_questions.length;
       nextRound = completed + 1;
@@ -285,12 +305,61 @@ export async function processNextGenerationJob() {
     return { processed: true, completed: true, jobId: job.id, matchId };
   } catch (error) {
     const failure = error instanceof ProviderFailure ? error : new ProviderFailure(error instanceof Error ? error.message : "Generation failed", "internal", 10);
+    if (failure.qualityReport && activeBatchStart != null) {
+      await admin.from("question_quality_audits").upsert({
+        generation_job_id: job.id,
+        batch_round_start: activeBatchStart,
+        prompt_version: QUESTION_PROMPT_VERSION,
+        policy_version: QUESTION_QUALITY_POLICY_VERSION,
+        passed: false,
+        score: failure.qualityReport.score,
+        checks: failure.qualityReport.checks,
+        content_fingerprint: failure.qualityReport.fingerprint
+      }, { onConflict: "generation_job_id,batch_round_start,prompt_version" });
+    }
     const terminal = failure.retryAfterSeconds === 0 || job.attempt_count + 1 >= job.max_attempts;
     await releaseJob(admin, job, { status: terminal ? "failed" : "retrying", stage: terminal ? "Tạo trận thất bại" : `Tạm dừng · sẽ thử lại từ câu ${nextRound}`, completed, nextRound, retry: failure.retryAfterSeconds, code: failure.code, error: failure.message.slice(0, 1800) });
     await recordTelemetry({ name: terminal ? "generation.failed" : "generation.retry_scheduled", severity: terminal ? "error" : "warning", correlationId: job.correlation_id, roomId: job.room_id, userId: job.requested_by, provider: "groq", errorCode: failure.code, errorMessage: failure.message, metadata: { jobId: job.id, completedRounds: completed, retryAfterSeconds: failure.retryAfterSeconds } });
     if (terminal) await admin.from("rooms").update({ status: "AI_DISCUSSION" }).eq("id", job.room_id).eq("status", "GENERATING_GAME");
     return { processed: true, completed: false, failed: terminal, retryAfterSeconds: failure.retryAfterSeconds, error: failure.message };
   }
+}
+
+const evaluationQuestionInputSchema = z.object({
+  request: z.string().trim().min(3).max(1000),
+  topic: z.string().trim().min(2).max(60),
+  level: z.string().trim().min(1).max(20),
+  difficulty: z.enum(["Easy", "Medium", "Hard"]),
+  modes: z.array(generatedQuestionSchema.shape.mode).min(1).max(4),
+  timePerQuestion: z.number().int().min(10).max(120).default(45)
+});
+
+export async function generateQuestionEvaluationCandidate(input: unknown) {
+  const parsed = evaluationQuestionInputSchema.parse(input);
+  const blueprint = battleBlueprintSchema.parse({
+    title: `Evaluation · ${parsed.topic}`,
+    topic: parsed.topic,
+    level: parsed.level,
+    rounds: Math.max(5, parsed.modes.length),
+    timePerQuestion: parsed.timePerQuestion,
+    difficulty: parsed.difficulty,
+    modes: [{ type: parsed.modes[0], count: Math.max(5, parsed.modes.length) }],
+    speedScoring: false,
+    streakBonus: false,
+    settings: DEFAULT_MATCH_SETTINGS
+  });
+  const request = gameGenerationRequestSchema.parse({
+    roomId: "00000000-0000-4000-8000-000000000000",
+    request: parsed.request,
+    preferences: { level: ["A1","A2","B1","B2","C1","C2","Mixed"].includes(parsed.level) ? parsed.level : "Mixed" }
+  });
+  const questions = await buildQuestionBatch(request, blueprint, parsed.modes, [], []);
+  return {
+    promptVersion: QUESTION_PROMPT_VERSION,
+    policyVersion: QUESTION_QUALITY_POLICY_VERSION,
+    questions,
+    quality: assessQuestionBatch(questions)
+  };
 }
 
 export async function drainGenerationQueue(options: { maxBatches?: number; timeBudgetMs?: number } = {}) {

@@ -58,6 +58,7 @@ export type RoomMemberData = {
   lastSeenAt: string;
   deviceState: Record<string, unknown>;
   connectionQuality: Record<string, unknown>;
+  moderationMuted: boolean;
 };
 
 export type SubmissionView = {

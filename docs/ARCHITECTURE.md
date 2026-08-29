@@ -83,3 +83,20 @@ Rubric trận nói lưu intelligibility, segmental accuracy, word stress, rhythm
 `telemetry_events` lưu correlation ID, stage, provider, duration và error code. `/api/internal/health` báo queue, stale presence, TTS failure, privacy backlog và lỗi một giờ gần nhất. Cả health và worker đều yêu cầu bearer secret.
 
 Playwright E2E chạy hai browser context với Anonymous Auth thật. Suite kiểm tra join/presence/host migration; suite AI opt-in kiểm tra queue thật, START ở cả hai phía, cùng round và NEXT ROUND ở cả hai phía. SQL production contracts kiểm tra object bắt buộc, private buckets và quyền secret answers mà không chèn row.
+# Production verification layer
+
+## Realtime fairness
+
+Mỗi browser gửi delivery receipt có idempotency key theo `question + user + client session + phase`. Server đóng dấu thời gian nhận; clock offset/RTT từ client chỉ là bằng chứng bổ sung, không thay thế thời gian server. PostgreSQL tạo `question_fairness_assessments` từ hai người chơi và phân loại `pending`, `fair`, `review` hoặc `compromised`. Điểm không dựa vào thời gian render local chưa được xác nhận.
+
+## AI quality lifecycle
+
+Generation batch đi qua deterministic Quality Gate trước khi được ghi vào trận: canonical answer, accepted answers, trùng câu, lộ đáp án, mode payload, provenance và cấu trúc lựa chọn đều được kiểm tra. `prompt_version`, `quality_policy_version`, fingerprint và check list được lưu để có thể tái hiện nguyên nhân. Admin eval gọi cùng pipeline/provider production; eval case do người vận hành tạo, không seed dữ liệu giả.
+
+## Control plane
+
+`platform_admins` tách quyền owner/admin/moderator khỏi role người học. Content Studio quản lý nguồn/license/moderation; Operations tổng hợp telemetry và durable alerts; Safety Console xử lý report. Các route control-plane luôn xác thực server-side và dùng service role chỉ sau khi role được kiểm tra.
+
+## PWA reliability
+
+Service worker chỉ cache immutable Next static assets và hình ảnh công khai; không cache navigation, API, transcript, đáp án hoặc dữ liệu phòng. Khi app resume/online, room client làm mới state và delivery receipt. Trong trận, Wake Lock được giữ khi nền tảng hỗ trợ. Push subscription thuộc từng user, secret chỉ đọc được bởi chính user/RLS và sender server; endpoint hết hạn tự bị vô hiệu.

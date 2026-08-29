@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { evaluateOperationalAlerts } from "@/lib/observability/operations";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -33,7 +34,8 @@ async function maintain() {
     admin.from("telemetry_events").delete().lt("occurred_at", telemetryCutoff).select("id"),
     admin.from("room_operations").delete().lt("created_at", operationsCutoff).select("id")
   ]);
-  return { expiredExports: exportIds.length, disconnectedMembers: members.data?.length ?? 0, releasedAudioLeases: assets.data?.length ?? 0, expiredInvites: invites.data?.length ?? 0, prunedTelemetry: telemetry.data?.length ?? 0, prunedOperations: operations.data?.length ?? 0 };
+  const evaluatedAlerts = await evaluateOperationalAlerts(admin);
+  return { expiredExports: exportIds.length, disconnectedMembers: members.data?.length ?? 0, releasedAudioLeases: assets.data?.length ?? 0, expiredInvites: invites.data?.length ?? 0, prunedTelemetry: telemetry.data?.length ?? 0, prunedOperations: operations.data?.length ?? 0, evaluatedAlerts: evaluatedAlerts.length };
 }
 
 export async function GET(request: Request) {

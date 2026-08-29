@@ -40,6 +40,13 @@ test.describe("real two-browser room coordination", () => {
     const host = await createRoom(browser, suffix);
     const peer = await joinRoom(browser, host.code, suffix);
     await enterSetup(host.page, peer.page);
+    await expect(host.page.getByLabel("Host moderation")).toBeVisible();
+    await host.page.getByRole("button", { name: "Tắt mic" }).click();
+    await expect(peer.page.getByText("Host đã tắt micro của bạn trong phòng này.")).toBeVisible({ timeout: 25_000 });
+    await host.page.getByRole("button", { name: "Cho bật mic" }).click();
+    await expect(peer.page.getByText("Host đã tắt micro của bạn trong phòng này.")).toBeHidden({ timeout: 25_000 });
+    await peer.page.reload();
+    await expect(peer.page.getByText("2 online")).toBeVisible({ timeout: 35_000 });
     await host.context.close();
     await expect(peer.page.getByText(/host epoch [2-9]/u)).toBeVisible({ timeout: 50_000 });
     await peer.context.close();
@@ -63,6 +70,8 @@ test.describe("real AI match handshake", () => {
       await expect(hostStart).toBeVisible({ timeout: 240_000 });
       await expect(peerStart).toBeVisible({ timeout: 240_000 });
       await Promise.all([hostStart.click(), peerStart.click()]);
+      await expect(host.page.getByText("Hai bên đã đồng bộ")).toBeVisible({ timeout: 35_000 });
+      await expect(peer.page.getByText("Hai bên đã đồng bộ")).toBeVisible({ timeout: 35_000 });
       await answerCurrentRound(host.page, "e2e host answer");
       await answerCurrentRound(peer.page, "e2e peer answer");
       await expect(host.page.getByRole("button", { name: /NEXT ROUND/u })).toBeVisible({ timeout: 35_000 });
