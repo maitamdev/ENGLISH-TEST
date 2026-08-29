@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const questionModeSchema = z.enum([
-  "VI_TO_EN", "EN_TO_VI", "LISTENING", "SPELLING", "MULTIPLE_CHOICE", "READING", "CONTEXT", "GRAMMAR",
+  "VI_TO_EN", "EN_TO_VI", "LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING", "SHADOWING",
+  "MULTIPLE_CHOICE", "READING", "SENTENCE_BUILDER", "CLOZE", "ERROR_CORRECTION", "COLLOCATION", "CONTEXT", "GRAMMAR",
   "TRANSLATION", "DEFINITION", "PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING", "BOSS"
 ]);
 
@@ -18,8 +19,11 @@ export const matchSettingsSchema = z.object({
   shuffleOptions: z.boolean().default(true),
   listeningAccent: z.enum(["US", "UK", "AU"]).default("US"),
   listeningSpeed: z.union([z.literal(0.75), z.literal(1), z.literal(1.25)]).default(1),
+  listeningFocus: z.enum(["WORDS", "SENTENCES", "STORIES", "MIXED"]).default("MIXED"),
   replayLimit: z.number().int().min(1).max(5).default(2),
+  showTranscriptAfter: z.boolean().default(true),
   speakingSeconds: z.number().int().min(10).max(120).default(45),
+  shadowingSeconds: z.number().int().min(10).max(90).default(30),
   answerReveal: z.literal("AFTER_BOTH").default("AFTER_BOTH")
 });
 

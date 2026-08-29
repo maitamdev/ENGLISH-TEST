@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight, BookOpenText, Check, CircleStop, Headphones, Lightbulb,
-  LoaderCircle, Mic, Play, RotateCcw, Volume2
+  LoaderCircle, Mic, Play, RotateCcw, Undo2, Volume2
 } from "lucide-react";
 import type { MatchSettings, PublicQuestion } from "@/types/game";
 
-const spokenModes = new Set(["PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE"]);
+const spokenModes = new Set(["PRONUNCIATION", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE"]);
+const listeningModes = new Set(["LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING"]);
 
 type Props = {
   question: PublicQuestion;
@@ -30,9 +31,10 @@ export function QuestionPlayer(props: Props) {
   const { question } = props;
   if (spokenModes.has(question.mode)) return <SpeakingQuestion {...props} />;
   if (question.mode === "WRITING") return <WritingQuestion {...props} />;
-  if (question.mode === "LISTENING" || question.mode === "SPELLING") return <ListeningQuestion {...props} />;
+  if (listeningModes.has(question.mode)) return <ListeningQuestion {...props} />;
   if (question.mode === "READING") return <ReadingQuestion {...props} />;
-  if (question.mode === "MULTIPLE_CHOICE") return <MultipleChoiceQuestion {...props} />;
+  if (question.mode === "SENTENCE_BUILDER") return <SentenceBuilderQuestion {...props} />;
+  if (question.mode === "MULTIPLE_CHOICE" || strings(question.publicData?.options).length > 1) return <MultipleChoiceQuestion {...props} />;
   return <TextQuestion {...props} />;
 }
 
@@ -99,30 +101,46 @@ function ReadingQuestion(props: Props) {
 }
 
 function ListeningQuestion(props: Props) {
-  const { question, settings } = props;
+  const { question } = props;
+  return <>
+    <QuestionPrompt question={question} />
+    <AudioConsole question={question} settings={props.settings} />
+    {strings(question.publicData?.options).length > 1
+      ? <MultipleChoiceQuestion {...props} question={{ ...question, prompt: "", instruction: "" }} />
+      : <TextQuestion {...props} question={{ ...question, prompt: "", instruction: "" }} />}
+  </>;
+}
+
+function AudioConsole({ question, settings }: Pick<Props, "question" | "settings">) {
   const [plays, setPlays] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [audioUrl, setAudioUrl] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const limit = Number(question.publicData?.replayLimit ?? settings.replayLimit);
 
-  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+  useEffect(() => {
+    const controller = new AbortController();
+    let objectUrl = "";
+    fetch(`/api/ai/tts?questionId=${encodeURIComponent(question.id)}`, { cache: "force-cache", signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? "Không tạo được audio");
+        objectUrl = URL.createObjectURL(await response.blob());
+        const audio = new Audio(objectUrl);
+        audio.playbackRate = settings.listeningSpeed;
+        audioRef.current = audio;
+      })
+      .catch((caught: Error) => { if (caught.name !== "AbortError") setError(caught.message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => { controller.abort(); audioRef.current?.pause(); audioRef.current = null; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [question.id, settings.listeningSpeed]);
 
   async function playAudio() {
     if (plays >= limit || loading) return;
     setLoading(true);
+    setError("");
     try {
-      let url = audioUrl;
-      if (!url) {
-        const response = await fetch(`/api/ai/tts?questionId=${encodeURIComponent(question.id)}`, { cache: "force-cache" });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? "Không tạo được audio");
-        url = URL.createObjectURL(await response.blob());
-        setAudioUrl(url);
-      }
-      const audio = audioRef.current ?? new Audio();
-      audioRef.current = audio;
-      audio.src = url;
-      audio.playbackRate = settings.listeningSpeed;
+      const audio = audioRef.current;
+      if (!audio) throw new Error("Audio chưa sẵn sàng");
       await audio.play();
       setPlays((count) => count + 1);
     } catch {
@@ -133,20 +151,54 @@ function ListeningQuestion(props: Props) {
         utterance.rate = settings.listeningSpeed;
         window.speechSynthesis.speak(utterance);
         setPlays((count) => count + 1);
-      }
+      } else setError("Chưa tải được audio. Hãy kiểm tra cấu hình Gemini TTS rồi thử lại.");
     } finally { setLoading(false); }
   }
 
   return <>
-    <QuestionPrompt question={question} />
     <div className="listening-console">
       <div className="listening-orb"><Headphones size={30} /></div>
-      <div><strong>Nghe kỹ trước khi trả lời</strong><span>{plays}/{limit} lượt nghe đã dùng · {settings.listeningAccent} · {settings.listeningSpeed}x</span></div>
-      <button type="button" className="button button-secondary" onClick={playAudio} disabled={plays >= limit || loading}>{loading ? <LoaderCircle size={17} className="animate-spin" /> : plays === 0 ? <Play size={17} /> : <RotateCcw size={17} />}{plays === 0 ? "Phát audio" : plays < limit ? "Nghe lại" : "Đã hết lượt"}</button>
+      <div><strong>{question.mode === "SHADOWING" ? "Nghe mẫu trước khi bắt chước" : question.mode === "STORY_LISTENING" ? "Nghe hết câu chuyện trước khi trả lời" : "Nghe kỹ trước khi trả lời"}</strong><span>{plays}/{limit} lượt nghe đã dùng · {settings.listeningAccent} · {settings.listeningSpeed}x</span></div>
+      <button type="button" className="button button-secondary" onClick={playAudio} disabled={plays >= limit || loading}>{loading ? <LoaderCircle size={17} className="animate-spin" /> : plays === 0 ? <Play size={17} /> : <RotateCcw size={17} />}{loading ? "Đang chuẩn bị" : plays === 0 ? "Phát audio" : plays < limit ? "Nghe lại" : "Đã hết lượt"}</button>
     </div>
-    {strings(question.publicData?.options).length > 1
-      ? <MultipleChoiceQuestion {...props} question={{ ...question, prompt: "", instruction: "" }} />
-      : <TextQuestion {...props} question={{ ...question, prompt: "", instruction: "" }} />}
+    {error && <div className="gemini-error">{error}</div>}
+  </>;
+}
+
+type BuilderToken = { id: number; text: string };
+
+function SentenceBuilderQuestion({ question, seconds, busy, settings, onChange, onSubmit, onHint }: Props) {
+  const [available, setAvailable] = useState<BuilderToken[]>(() => strings(question.publicData?.tokens).map((text, id) => ({ id, text })));
+  const [selected, setSelected] = useState<BuilderToken[]>([]);
+
+  function publish(next: BuilderToken[]) {
+    setSelected(next);
+    onChange(next.map((token) => token.text).join(" "));
+  }
+  function choose(token: BuilderToken) {
+    setAvailable((items) => items.filter((item) => item.id !== token.id));
+    publish([...selected, token]);
+  }
+  function undo() {
+    const token = selected.at(-1);
+    if (!token) return;
+    setAvailable((items) => [...items, token].sort((a, b) => a.id - b.id));
+    publish(selected.slice(0, -1));
+  }
+  function reset() {
+    setAvailable([...available, ...selected].sort((a, b) => a.id - b.id));
+    publish([]);
+  }
+
+  return <>
+    <QuestionPrompt question={question} />
+    <div className="sentence-builder" aria-label="Xếp câu">
+      <div className={`sentence-built ${selected.length === 0 ? "empty" : ""}`} aria-live="polite">{selected.length > 0 ? selected.map((token) => <span key={token.id}>{token.text}</span>) : <p>Chọn từng từ để ghép câu</p>}</div>
+      <div className="sentence-bank">{available.map((token) => <button type="button" key={token.id} onClick={() => choose(token)}>{token.text}</button>)}</div>
+      <div className="sentence-actions"><button type="button" className="suggestion" onClick={undo} disabled={selected.length === 0}><Undo2 size={15} /> Hoàn tác</button><button type="button" className="suggestion" onClick={reset} disabled={selected.length === 0}><RotateCcw size={15} /> Làm lại</button></div>
+    </div>
+    <button className="button button-primary button-wide" onClick={onSubmit} disabled={busy || selected.length === 0 || available.length > 0 || seconds <= 0}>Chốt câu <ArrowRight size={17} /></button>
+    <HintAction enabled={settings.allowHints} onHint={onHint} />
   </>;
 }
 
@@ -216,12 +268,13 @@ function SpeakingQuestion({ question, settings, seconds, onSpeakingSubmitted, on
 
   return <>
     <QuestionPrompt question={question} />
-    {typeof question.publicData?.targetText === "string" && <div className="speaking-target"><Volume2 size={17} /><span>Câu mẫu</span><strong>{question.publicData.targetText}</strong></div>}
+    {question.mode === "SHADOWING" && <AudioConsole question={question} settings={settings} />}
+    {question.mode !== "SHADOWING" && typeof question.publicData?.targetText === "string" && <div className="speaking-target"><Volume2 size={17} /><span>Câu mẫu</span><strong>{question.publicData.targetText}</strong></div>}
     {typeof question.publicData?.scenario === "string" && <div className="roleplay-brief"><span>TÌNH HUỐNG</span><p>{question.publicData.scenario}</p>{typeof question.publicData?.role === "string" && <strong>Vai của bạn: {question.publicData.role}</strong>}</div>}
     <div className={`recording-console ${recording ? "recording" : ""}`}>
       <div className="recording-meter"><span /><span /><span /><span /><span /></div>
       <strong>{processing ? "Gemini đang nghe lại và chấm theo rubric" : recording ? `Đang ghi âm ${elapsed}s / ${recordingLimit}s` : "Câu trả lời được chấm từ audio thật"}</strong>
-      <p>AI đánh giá nội dung, phát âm, độ trôi chảy, ngữ pháp và từ vựng. Audio không được lưu lâu dài.</p>
+      <p>{question.mode === "SHADOWING" ? "AI so với câu mẫu và chấm độ chính xác, độ dễ hiểu, trọng âm, nhịp điệu, ngữ điệu. Audio không được lưu lâu dài." : "AI đánh giá nội dung, phát âm, độ trôi chảy, ngữ pháp và từ vựng. Audio không được lưu lâu dài."}</p>
       {processing ? <button className="button button-primary" disabled><LoaderCircle size={17} className="animate-spin" /> Đang chấm</button> : recording ? <button className="button button-danger" onClick={stopRecording}><CircleStop size={17} /> Dừng và nộp</button> : <button className="button button-primary" onClick={startRecording} disabled={seconds <= 0}><Mic size={17} /> Bắt đầu nói</button>}
     </div>
     {error && <div className="gemini-error">{error}</div>}

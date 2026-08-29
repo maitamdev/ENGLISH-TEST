@@ -14,8 +14,16 @@ export type QuestionMode =
   | "EN_TO_VI"
   | "LISTENING"
   | "SPELLING"
+  | "MINIMAL_PAIRS"
+  | "AUDIO_CHOICE"
+  | "STORY_LISTENING"
+  | "SHADOWING"
   | "MULTIPLE_CHOICE"
   | "READING"
+  | "SENTENCE_BUILDER"
+  | "CLOZE"
+  | "ERROR_CORRECTION"
+  | "COLLOCATION"
   | "CONTEXT"
   | "GRAMMAR"
   | "TRANSLATION"
@@ -32,6 +40,7 @@ export type AiPresence = "QUIET" | "BALANCED" | "ACTIVE";
 export type FeedbackStyle = "CONCISE" | "TEACHER" | "DETAILED";
 export type AnswerStrictness = "LENIENT" | "STANDARD" | "STRICT";
 export type ListeningAccent = "US" | "UK" | "AU";
+export type ListeningFocus = "WORDS" | "SENTENCES" | "STORIES" | "MIXED";
 
 export type MatchSettings = {
   experience: MatchExperience;
@@ -46,8 +55,11 @@ export type MatchSettings = {
   shuffleOptions: boolean;
   listeningAccent: ListeningAccent;
   listeningSpeed: 0.75 | 1 | 1.25;
+  listeningFocus: ListeningFocus;
   replayLimit: number;
+  showTranscriptAfter: boolean;
   speakingSeconds: number;
+  shadowingSeconds: number;
   answerReveal: "AFTER_BOTH";
 };
 

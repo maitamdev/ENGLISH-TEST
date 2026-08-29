@@ -39,7 +39,7 @@ export async function GET(request: Request) {
     .select("id, mode, prompt, public_payload")
     .eq("id", questionId.data)
     .maybeSingle();
-  if (!question || !["LISTENING", "SPELLING"].includes(question.mode)) return NextResponse.json({ error: "Audio không tồn tại" }, { status: 404 });
+  if (!question || !["LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING", "SHADOWING"].includes(question.mode)) return NextResponse.json({ error: "Audio không tồn tại" }, { status: 404 });
   const payload = question.public_payload as Record<string, unknown> | null;
   const { data: secret } = await admin.from("question_answers").select("grading_rules").eq("question_id", question.id).maybeSingle();
   const gradingRules = secret?.grading_rules as Record<string, unknown> | null;

@@ -23,7 +23,8 @@ export const maxDuration = 300;
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const groqModeValues = [
-  "VI_TO_EN", "EN_TO_VI", "LISTENING", "SPELLING", "MULTIPLE_CHOICE", "READING", "CONTEXT", "GRAMMAR",
+  "VI_TO_EN", "EN_TO_VI", "LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING", "SHADOWING",
+  "MULTIPLE_CHOICE", "READING", "SENTENCE_BUILDER", "CLOZE", "ERROR_CORRECTION", "COLLOCATION", "CONTEXT", "GRAMMAR",
   "TRANSLATION", "DEFINITION", "PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING", "BOSS"
 ] as const;
 
@@ -91,11 +92,12 @@ function questionBatchOutputSchema(count: number): GroqSchema {
               prompt: { type: "string" }, answer: { type: "string" }, accepted: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" } },
               instruction: nullableString, explanation: nullableString,
               options: { type: "array", maxItems: 5, items: { type: "string" } },
+              tokens: { type: "array", maxItems: 20, items: { type: "string" } },
               passage: nullableString, audioText: nullableString, targetText: nullableString,
               scenario: nullableString, role: nullableString, writingRequirements: nullableString,
               rubric: { type: "array", maxItems: 5, items: { type: "string" } }
             },
-            required: ["prompt", "answer", "accepted", "instruction", "explanation", "options", "passage", "audioText", "targetText", "scenario", "role", "writingRequirements", "rubric"]
+            required: ["prompt", "answer", "accepted", "instruction", "explanation", "options", "tokens", "passage", "audioText", "targetText", "scenario", "role", "writingRequirements", "rubric"]
           }
         }
       },
@@ -158,7 +160,13 @@ function requestedRoundCount(request: string) {
 function presetFromBrief(request: string) {
   const normalized = request.normalize("NFKD").replace(/[\u0300-\u036f]/gu, "").toLocaleLowerCase("vi-VN");
   if (/\b(co-op|coop|cung doi|hoc cung|hop tac)\b/u.test(normalized)) return "coop-study";
+  if (/\b(shadowing|nhai lai|bat chuoc giong|bat chuoc ngu dieu)\b/u.test(normalized)) return "shadowing-studio";
+  if (/\b(minimal pair|am gan|phan biet am|nghe nham)\b/u.test(normalized)) return "minimal-pair-duel";
+  if (/\b(nghe truyen|nghe hoi thoai|story listening|story quest)\b/u.test(normalized)) return "story-quest";
+  if (/\b(xep cau|xep tu|sentence builder|collocation|cum tu)\b/u.test(normalized)) return "sentence-forge";
+  if (/\b(sua loi|error correction|grammar repair|loi ngu phap)\b/u.test(normalized)) return "grammar-repair";
   if (/\b(phat am|thi noi|luyen noi|speaking|pronunciation|roleplay|tranh luan|debate)\b/u.test(normalized)) return "speaking-arena";
+  if (/\b(listening lab|luyen nghe tong hop)\b/u.test(normalized)) return "listening-lab";
   if (/\b(thi nghe|luyen nghe|listening|chep chinh ta|dictation)\b/u.test(normalized)) return "listening-sprint";
   if (/\b(thi doc|luyen doc|doc hieu|reading)\b/u.test(normalized)) return "reading-challenge";
   if (/\b(thi viet|luyen viet|viet luan|writing|essay)\b/u.test(normalized)) return "writing-workshop";
@@ -226,18 +234,19 @@ function normalizeCompactItem(value: unknown, mode: QuestionMode, blueprint: Bat
     : [];
   const uniqueOptions = [...new Map(rawOptions.map((option) => [answerKey(option), option])).values()];
   const options = blueprint.settings.shuffleOptions ? shuffled(uniqueOptions) : uniqueOptions;
-  if (["MULTIPLE_CHOICE", "READING"].includes(mode) && (options.length < 2 || !options.some((option) => answerKey(option) === answerKey(canonicalAnswer)))) return null;
+  const optionModes: QuestionMode[] = ["MULTIPLE_CHOICE", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING"];
+  if (optionModes.includes(mode) && (options.length < 2 || !options.some((option) => answerKey(option) === answerKey(canonicalAnswer)))) return null;
 
   const settings = blueprint.settings;
   const publicData: Record<string, unknown> = {};
   const privateData: Record<string, unknown> = {};
-  if (mode === "MULTIPLE_CHOICE") publicData.options = options.slice(0, 5);
+  if (["MULTIPLE_CHOICE", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING"].includes(mode)) publicData.options = options.slice(0, 5);
   if (mode === "READING") {
     if (typeof value.passage !== "string" || value.passage.trim().length < 40) return null;
     publicData.passage = value.passage.trim();
     if (options.length > 1) publicData.options = options.slice(0, 5);
   }
-  if (mode === "LISTENING" || mode === "SPELLING") {
+  if (["LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING", "SHADOWING"].includes(mode)) {
     const audioText = typeof value.audioText === "string" ? value.audioText.trim() : mode === "SPELLING" ? canonicalAnswer : "";
     if (!audioText) return null;
     privateData.audioText = audioText;
@@ -246,6 +255,20 @@ function normalizeCompactItem(value: unknown, mode: QuestionMode, blueprint: Bat
     publicData.replayLimit = settings.replayLimit;
     if (options.length > 1) publicData.options = options.slice(0, 5);
   }
+  if (mode === "STORY_LISTENING") publicData.audioKind = "story";
+  if (mode === "SHADOWING") {
+    publicData.maxSeconds = settings.shadowingSeconds;
+    publicData.rubric = ["word accuracy", "intelligibility", "stress and rhythm", "intonation", "fluency"];
+  }
+  if (mode === "SENTENCE_BUILDER") {
+    const suppliedTokens = Array.isArray(value.tokens)
+      ? value.tokens.filter((token): token is string => typeof token === "string").map((token) => token.trim()).filter(Boolean)
+      : [];
+    const tokens = suppliedTokens.length > 1 ? suppliedTokens : canonicalAnswer.split(/\s+/u);
+    if (tokens.length < 2 || tokens.length > 20) return null;
+    publicData.tokens = shuffled(tokens);
+  }
+  if (["CLOZE", "COLLOCATION"].includes(mode) && options.length > 1) publicData.options = options.slice(0, 5);
   if (mode === "PRONUNCIATION") publicData.targetText = typeof value.targetText === "string" ? value.targetText.trim() : canonicalAnswer;
   if (["SPEAKING", "ROLEPLAY", "DEBATE"].includes(mode)) {
     publicData.maxSeconds = settings.speakingSeconds;
@@ -263,7 +286,11 @@ function normalizeCompactItem(value: unknown, mode: QuestionMode, blueprint: Bat
   const instructionByMode: Partial<Record<QuestionMode, string>> = {
     VI_TO_EN: "Nhập từ hoặc cụm từ tiếng Anh.", EN_TO_VI: "Nhập nghĩa tiếng Việt.",
     LISTENING: "Nghe audio rồi trả lời bằng tiếng Anh.", SPELLING: "Nghe và chép lại chính xác.",
+    MINIMAL_PAIRS: "Nghe kỹ và chọn từ bạn thực sự nghe thấy.", AUDIO_CHOICE: "Nghe câu nói rồi chọn đáp án phù hợp nhất.",
+    STORY_LISTENING: "Nghe toàn bộ đoạn audio rồi trả lời câu hỏi.", SHADOWING: "Nghe câu mẫu, sau đó ghi âm và bắt chước nhịp điệu, trọng âm, ngữ điệu.",
     MULTIPLE_CHOICE: "Chọn một đáp án đúng nhất.", READING: "Đọc đoạn văn rồi trả lời câu hỏi.",
+    SENTENCE_BUILDER: "Chạm vào các từ theo đúng thứ tự để tạo thành câu.", CLOZE: "Điền từ hoặc cụm từ phù hợp vào chỗ trống.",
+    ERROR_CORRECTION: "Viết lại toàn bộ câu sau khi sửa lỗi.", COLLOCATION: "Hoàn thành cụm từ tự nhiên nhất trong tiếng Anh.",
     PRONUNCIATION: "Đọc thành tiếng rõ ràng theo câu mẫu.", SPEAKING: "Trả lời bằng tiếng Anh qua micro.",
     ROLEPLAY: "Nhập vai và phản hồi bằng tiếng Anh qua micro.", DEBATE: "Trình bày quan điểm bằng tiếng Anh qua micro.",
     WRITING: "Viết câu trả lời tiếng Anh đầy đủ."
@@ -346,7 +373,7 @@ export async function POST(request: Request) {
   const blueprintPrompt = [
     "Design only the blueprint for a two-player English learning competition.",
     "Return JSON only: {\"blueprint\":{\"title\":string,\"topic\":string,\"level\":string,\"rounds\":integer,\"timePerQuestion\":integer,\"difficulty\":\"Easy\"|\"Medium\"|\"Hard\",\"modes\":[{\"type\":mode,\"count\":integer}],\"speedScoring\":boolean,\"streakBonus\":boolean}}.",
-    "Modes: VI_TO_EN, EN_TO_VI, LISTENING, SPELLING, MULTIPLE_CHOICE, READING, CONTEXT, GRAMMAR, TRANSLATION, DEFINITION, PRONUNCIATION, SPEAKING, ROLEPLAY, DEBATE, WRITING, BOSS.",
+    `Modes: ${groqModeValues.join(", ")}.`,
     "Use 5-50 rounds. Honor an explicit requested quantity exactly; otherwise use 10.",
     "For vocabulary translation, use VI_TO_EN and EN_TO_VI and split them as evenly as possible unless one direction was explicitly requested.",
     `Selected experience: ${preset.label}. Selected CEFR: ${preferences?.level ?? "auto"}.`,
@@ -369,7 +396,7 @@ export async function POST(request: Request) {
       rounds: targetRounds,
       timePerQuestion: preferences?.timePerQuestion ?? Math.max(20, initialBlueprint.timePerQuestion),
       modes: selectedModes,
-      speedScoring: !selectedModes.some((item) => ["PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(item.type)) && initialBlueprint.speedScoring,
+      speedScoring: !selectedModes.some((item) => ["LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING", "PRONUNCIATION", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(item.type)) && initialBlueprint.speedScoring,
       settings: requestedSettings
     });
     if (!blueprintResult.success) throw new Error("The generated match blueprint failed validation");
@@ -396,12 +423,13 @@ export async function POST(request: Request) {
         const batchPrompt = [
           "Generate one compact batch of high-quality questions for a two-player English learning competition.",
           "Return exactly one JSON object and no markdown. Include every schema field for every item; use null for irrelevant nullable text fields and [] for irrelevant list fields.",
-          "Mode rules: VI_TO_EN has Vietnamese prompt and English answer; EN_TO_VI is the reverse. MULTIPLE_CHOICE requires 4 plausible options including answer. READING requires a 60-180 word passage and preferably 4 options. LISTENING requires audioText plus a comprehension prompt. SPELLING requires audioText equal to the phrase to transcribe. PRONUNCIATION requires targetText. SPEAKING, ROLEPLAY and DEBATE require a concrete prompt, scenario or rubric and a short reference answer, but allow natural open responses. WRITING requires writingRequirements, rubric and a short reference answer, but accepts many valid responses.",
+          "Mode rules: VI_TO_EN has Vietnamese prompt and English answer; EN_TO_VI is the reverse. MULTIPLE_CHOICE requires 4 plausible options including answer. READING requires a 60-180 word passage and preferably 4 options. LISTENING requires audioText plus a comprehension prompt. SPELLING requires audioText equal to the phrase to transcribe. MINIMAL_PAIRS requires a single English word as audioText and 2-4 genuinely confusable options including it. AUDIO_CHOICE requires a natural sentence as audioText and 4 answer options. STORY_LISTENING requires a coherent 60-130 word audioText and 4 comprehension options. SHADOWING requires a natural 5-18 word audioText, a hidden canonical answer identical to it, and a neutral prompt that does not reveal it. SENTENCE_BUILDER requires tokens containing every word of the canonical sentence once. CLOZE uses ___ in the prompt. ERROR_CORRECTION gives one incorrect sentence and expects the fully corrected sentence. COLLOCATION tests one natural word partnership. PRONUNCIATION requires targetText. SPEAKING, ROLEPLAY and DEBATE require a concrete prompt, scenario or rubric and a short reference answer, but allow natural open responses. WRITING requires writingRequirements, rubric and a short reference answer, but accepts many valid responses.",
           "For speaking modes, never make speed the learning objective. For reading/listening, the question must be answerable from the supplied passage/audioText only.",
           "accepted must include common exact synonyms and legitimate spelling/number variants for this specific context; never include merely related words.",
           QUESTION_GENERATION_POLICY,
           "Example item only: {\"prompt\":\"cái bàn\",\"answer\":\"table\",\"accepted\":[\"table\"]}.",
           `Topic: ${blueprint.topic}. CEFR: ${blueprint.level}. Difficulty: ${blueprint.difficulty}.`,
+          `Listening focus: ${blueprint.settings.listeningFocus}. Use this to choose word, sentence or story complexity whenever an audio mode is requested.`,
           `Players requested: ${parsed.data.request}`,
           `Randomness seed: ${Math.floor(Math.random() * 1000000)}. Ensure the chosen words/phrases are highly diverse, unexpected, and different every time.`,
           `Generate exactly ${requiredModes.length} questions for rounds ${start + 1}-${start + requiredModes.length}.`,
@@ -409,7 +437,7 @@ export async function POST(request: Request) {
           questions.length > 0 ? `Do not repeat any of these previous prompts: ${JSON.stringify(questions.map((question) => question.prompt))}` : "All prompts must be unique and unambiguous.",
           correction
         ].filter(Boolean).join("\n");
-        const complexCount = requiredModes.filter((mode) => ["READING", "LISTENING", "SPEAKING", "ROLEPLAY", "DEBATE"].includes(mode)).length;
+        const complexCount = requiredModes.filter((mode) => ["READING", "LISTENING", "STORY_LISTENING", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE"].includes(mode)).length;
         const batchTokenBudget = Math.max(800, Math.min(2300, requiredModes.length * 150 + complexCount * 180 + 300));
         const batchJson = await requestGroqJson(apiKey, model, batchPrompt, batchTokenBudget, questionBatchOutputSchema(requiredModes.length));
         const rawQuestions = isRecord(batchJson) && Array.isArray(batchJson.items) ? batchJson.items : [];

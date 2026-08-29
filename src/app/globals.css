@@ -297,6 +297,16 @@ a { color: inherit; text-decoration: none; }
 .listening-orb { width: 68px; aspect-ratio: 1; display: grid; place-items: center; border: 1px solid rgba(199,245,66,.35); border-radius: 50%; color: var(--accent); box-shadow: 0 0 40px rgba(199,245,66,.08); }
 .listening-console > div:nth-child(2) { display: grid; gap: 4px; }
 .listening-console span, .recording-console p { color: var(--muted); font-size: .78rem; }
+.sentence-builder { width: min(100%, 760px); display: grid; gap: 14px; margin: 20px 0 16px; }
+.sentence-built { min-height: 86px; display: flex; align-content: center; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 16px; border: 1px solid rgba(199,245,66,.3); border-radius: 12px; background: rgba(199,245,66,.045); }
+.sentence-built.empty { border-style: dashed; border-color: var(--line-strong); background: #090c0f; }
+.sentence-built p { margin: 0; color: var(--muted); font-size: .82rem; }
+.sentence-built span, .sentence-bank button { padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 9px; color: var(--text); background: var(--surface-raised); font: inherit; font-size: .9rem; font-weight: 700; line-height: 1; }
+.sentence-built span { border-color: rgba(199,245,66,.4); color: var(--accent); }
+.sentence-bank { min-height: 46px; display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.sentence-bank button { cursor: pointer; transition: border-color .16s ease, transform .16s ease; }
+.sentence-bank button:hover { border-color: var(--accent); transform: translateY(-1px); }
+.sentence-actions { display: flex; justify-content: center; gap: 8px; }
 .speaking-target, .roleplay-brief { width: min(100%, 760px); margin: 14px 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 11px; background: #0a0e11; text-align: left; }
 .speaking-target { display: grid; grid-template-columns: 22px auto 1fr; align-items: center; gap: 9px; }
 .speaking-target span { color: var(--muted); font-size: .7rem; text-transform: uppercase; }
@@ -339,7 +349,7 @@ a { color: inherit; text-decoration: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .studio-advanced, .recording-console.recording .recording-meter span { animation: none; }
-  .preset-option, .choice-option, .advanced-trigger svg, .studio-toggle i, .studio-toggle i::after { transition: none; }
+  .preset-option, .choice-option, .sentence-bank button, .advanced-trigger svg, .studio-toggle i, .studio-toggle i::after { transition: none; }
 }
 
 /* Voice room and match */

@@ -12,7 +12,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
   if (!authData.user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
 
   const { data: match } = await admin.from("matches")
-    .select("id, room_id, title, topic, level, status, round_count, started_at, ended_at")
+    .select("id, room_id, title, topic, level, status, round_count, started_at, ended_at, blueprint")
     .eq("id", matchId)
     .maybeSingle();
   if (!match) return NextResponse.json({ error: "Match not found" }, { status: 404 });
@@ -58,6 +58,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
     };
   });
 
+  const blueprint = match.blueprint as { settings?: { showTranscriptAfter?: boolean } } | null;
+  const showTranscript = blueprint?.settings?.showTranscriptAfter !== false;
+
   return NextResponse.json({
     match: {
       id: match.id,
@@ -80,7 +83,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
         timeLimit: question.time_limit,
         publicData: {
           ...(question.public_payload as Record<string, unknown> ?? {}),
-          ...((answer?.grading_rules as Record<string, unknown> | null)?.audioText
+          ...(showTranscript && (answer?.grading_rules as Record<string, unknown> | null)?.audioText
             ? { audioText: (answer?.grading_rules as Record<string, unknown>).audioText }
             : {})
         },

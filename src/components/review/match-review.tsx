@@ -69,10 +69,11 @@ export function MatchReview({ data }: { data: MatchReviewData }) {
 }
 
 function skillForMode(mode: string) {
-  if (["LISTENING", "SPELLING"].includes(mode)) return "Nghe";
+  if (["LISTENING", "SPELLING", "MINIMAL_PAIRS", "AUDIO_CHOICE", "STORY_LISTENING"].includes(mode)) return "Nghe";
   if (["READING", "DEFINITION", "CONTEXT"].includes(mode)) return "Đọc và từ vựng";
-  if (["PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE"].includes(mode)) return "Nói";
-  if (["GRAMMAR", "WRITING"].includes(mode)) return "Ngữ pháp và viết";
+  if (["PRONUNCIATION", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE"].includes(mode)) return "Nói";
+  if (["GRAMMAR", "SENTENCE_BUILDER", "CLOZE", "ERROR_CORRECTION", "WRITING"].includes(mode)) return "Ngữ pháp và viết";
+  if (mode === "COLLOCATION") return "Cụm từ tự nhiên";
   return "Từ vựng và dịch";
 }
 

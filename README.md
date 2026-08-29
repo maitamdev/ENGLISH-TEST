@@ -1,6 +1,6 @@
 # LexiDuel
 
-LexiDuel is a private two-player English practice room with WebRTC voice, AI-generated matches, server-side grading, and persistent learning history.
+LexiDuel is a private two-player English practice room with WebRTC voice, AI-generated matches, server-side grading, and persistent learning history. Its learning labs cover vocabulary, listening comprehension, minimal pairs, dictation, story listening, shadowing, pronunciation, speaking, reading, sentence building, cloze, error correction, collocations and writing.
 
 There is no seed script, sample player, sample room, sample question, or browser fallback. A fresh database is intentionally empty. Supabase is the only source of truth for shared application data.
 
@@ -8,7 +8,7 @@ There is no seed script, sample player, sample room, sample question, or browser
 
 1. Create a new Supabase project.
 2. Open **Authentication → Providers → Anonymous Sign-Ins** and enable anonymous sign-ins. Google OAuth is optional.
-3. Open the SQL editor and run [`supabase/schema.sql`](supabase/schema.sql) once against the new project. The script creates all tables, functions, triggers, RLS policies, Realtime authorization, the avatar bucket, and the Realtime publication.
+3. Open the SQL editor and run [`supabase/schema.sql`](supabase/schema.sql), then every migration in the exact order listed in [`supabase/README.md`](supabase/README.md). The scripts create the tables, functions, triggers, RLS policies, Realtime authorization, learning labs and protected grading paths.
 4. Open **Project Settings → API Keys** and copy the project URL, publishable key, and secret key.
 
 The SQL file targets a clean LexiDuel project and is not a repeatable seed. Do not run it twice against the same schema.
@@ -27,6 +27,8 @@ GROQ_MODEL=YOUR_JSON_CAPABLE_GROQ_MODEL
 
 GEMINI_API_KEY=YOUR_GOOGLE_AI_STUDIO_KEY
 GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
+GEMINI_GRADING_MODEL=gemini-3.7-flash
+GEMINI_TTS_MODEL=gemini-3.1-flash-tts-preview
 ```
 
 Never expose `SUPABASE_SECRET_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY` with a `NEXT_PUBLIC_` prefix. The browser receives a one-use, short-lived Gemini Live token from the authenticated server route; it never receives the permanent Gemini API key.

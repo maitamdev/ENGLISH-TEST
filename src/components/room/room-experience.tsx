@@ -77,7 +77,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       void channelRef.current?.send({ type: "broadcast", event: "gemini_audio", payload: { from: room.currentUserId, audio } });
     },
     sessionMode: room.phase === "battle" || room.phase === "round-result" ? "coach" : "setup",
-    sessionContext: activeQuestion ? `Câu hiện tại: ${activeQuestion.prompt}. Hướng dẫn: ${activeQuestion.instruction}. Không được đoán hoặc tiết lộ đáp án trước khi lượt chơi kết thúc.` : undefined
+    sessionContext: activeQuestion ? `Mode hiện tại: ${activeQuestion.mode}. Câu hiện tại: ${activeQuestion.prompt}. Hướng dẫn: ${activeQuestion.instruction}. Không được đoán hoặc tiết lộ đáp án trước khi lượt chơi kết thúc.` : undefined
   });
   const playRemoteGeminiAudio = gemini.playRemoteAudio;
   const streamRef = useRef<MediaStream | null>(null);
@@ -295,6 +295,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     const sent = gemini.sendText([
       "HỆ_THỐNG_CÂU_MỚI",
       `Vòng ${room.match.currentRound}/${room.match.roundCount}.`,
+      `Dạng bài: ${room.match.question.mode}.`,
       `Câu hỏi: ${room.match.question.prompt}`,
       `Hướng dẫn: ${room.match.question.instruction}`,
       `Thời gian: ${room.match.question.timeLimit} giây.`,
@@ -345,6 +346,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       `Đáp án đúng: ${result.canonicalAnswer}.`,
       `Các đáp án chấp nhận: ${result.acceptedAnswers.join(", ")}.`,
       `Giải thích: ${result.explanation}`,
+      `Dạng bài vừa chấm: ${room.match.question?.mode ?? "UNKNOWN"}. Với bài nghe hãy nhắc một chi tiết cần nghe; với SHADOWING hoặc phát âm hãy ưu tiên độ dễ hiểu, trọng âm, nhịp và ngữ điệu; với xếp/sửa câu hãy chỉ ra quy tắc ngữ pháp ngắn gọn.`,
       feedbackStyle === "CONCISE"
         ? "Hãy đánh giá ngay bằng tiếng Việt trong tối đa hai câu. Sau đó chờ hai người xác nhận NEXT ROUND."
         : feedbackStyle === "DETAILED"
@@ -380,7 +382,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     const remainingUntilDeadline = Math.max(0, deadline - serverNow);
 
     // Auto-submit "⏱ Hết giờ" when timer expires (only if user hasn't submitted)
-    const rubricQuestion = ["PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(activeQuestion.mode);
+    const rubricQuestion = ["PRONUNCIATION", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(activeQuestion.mode);
     if (!rubricQuestion && !hasSubmittedCurrent && autoSubmitQuestionRef.current !== questionKey) {
       if (autoSubmitTimerRef.current) clearTimeout(autoSubmitTimerRef.current);
       autoSubmitQuestionRef.current = questionKey;
@@ -609,7 +611,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     }
     if (phase === "countdown") return <section className="surface center-stage"><div className="countdown">{countdown}</div><p>Máy chủ đang đồng bộ thời điểm mở câu cho cả hai người.</p></section>;
     if (phase === "battle" && room.match?.question && roundBeginsIn > 0) return <div className="battle-shell"><Scorebar members={room.members} title={room.match.title} round={room.match.currentRound} rounds={room.match.roundCount} seconds={room.match.question.timeLimit} /><section className="surface question-stage"><span className="mode-label">SYNCHRONIZING</span><div className="countdown">{roundBeginsIn}</div><h2>Cả hai sẽ bắt đầu cùng lúc</h2><p>Đề và ô trả lời sẽ mở theo đồng hồ máy chủ, không phụ thuộc máy nào nhận Realtime trước.</p></section></div>;
-    if (phase === "battle" && room.match?.question) return <div className="battle-shell"><Scorebar members={room.members} title={room.match.title} round={room.match.currentRound} rounds={room.match.roundCount} seconds={seconds} /><section className="surface question-stage"><span className="mode-label">{room.match.question.mode.replaceAll("_", " ")}</span>{submitted ? <div className="answer-submitted"><CheckCircle2 size={28} className="text-accent" /><h2>Đã nộp đáp án</h2><p>Gemini vẫn đang hoạt động. Đang chờ người còn lại.</p></div> : roundExpired ? <div className="answer-submitted"><XCircle size={28} className="review-wrong" /><h2>Hết giờ</h2><p>Đang ghi nhận lượt này và chờ người còn lại.</p></div> : <QuestionPlayer question={room.match.question} value={answer} settings={resolveMatchSettings(room.match.blueprint)} seconds={seconds} busy={busy} onChange={(value) => setAnswerDrafts((drafts) => ({ ...drafts, [room.match!.question!.id]: value }))} onSubmit={() => void submit()} onSpeakingSubmitted={() => { toast.success("Gemini đã chấm phần nói. Đang chờ người còn lại."); router.refresh(); }} onWritingSubmitted={() => { toast.success("Gemini đã chấm bài viết. Đang chờ người còn lại."); router.refresh(); }} onHint={requestHint} />}<div className="answer-help">Điểm được tính theo từng kỹ năng. Câu nói và viết ưu tiên chất lượng; câu nhanh ưu tiên độ chính xác trước tốc độ.</div><div className="battle-coach"><div className="gemini-controls">{gemini.status === "off" || gemini.status === "error" ? <button type="button" className="button button-secondary" onClick={startGemini} disabled={remoteAiActive}><Bot size={17} /> {remoteAiActive ? "Gemini đang hoạt động" : "Bật Gemini trợ giảng"}</button> : <button type="button" className="button button-danger" onClick={stopGemini}><MicOff size={17} /> Tắt Gemini</button>}<span className={`gemini-status ${remoteAiActive ? "listening" : gemini.status}`}>{remoteAiActive ? "shared" : gemini.status}</span></div>{gemini.error && <div className="gemini-error">{gemini.error}</div>}{gemini.outputTranscript && <div className="ai-transcript">{gemini.outputTranscript}</div>}</div></section></div>;
+    if (phase === "battle" && room.match?.question) return <div className="battle-shell"><Scorebar members={room.members} title={room.match.title} round={room.match.currentRound} rounds={room.match.roundCount} seconds={seconds} /><section className="surface question-stage"><span className="mode-label">{room.match.question.mode.replaceAll("_", " ")}</span>{submitted ? <div className="answer-submitted"><CheckCircle2 size={28} className="text-accent" /><h2>Đã nộp đáp án</h2><p>Gemini vẫn đang hoạt động. Đang chờ người còn lại.</p></div> : roundExpired ? <div className="answer-submitted"><XCircle size={28} className="review-wrong" /><h2>Hết giờ</h2><p>Đang ghi nhận lượt này và chờ người còn lại.</p></div> : <QuestionPlayer key={room.match.question.id} question={room.match.question} value={answer} settings={resolveMatchSettings(room.match.blueprint)} seconds={seconds} busy={busy} onChange={(value) => setAnswerDrafts((drafts) => ({ ...drafts, [room.match!.question!.id]: value }))} onSubmit={() => void submit()} onSpeakingSubmitted={() => { toast.success("Gemini đã chấm phần nói. Đang chờ người còn lại."); router.refresh(); }} onWritingSubmitted={() => { toast.success("Gemini đã chấm bài viết. Đang chờ người còn lại."); router.refresh(); }} onHint={requestHint} />}<div className="answer-help">Điểm được tính theo từng kỹ năng. Câu nói và viết ưu tiên chất lượng; câu nhanh ưu tiên độ chính xác trước tốc độ.</div><div className="battle-coach"><div className="gemini-controls">{gemini.status === "off" || gemini.status === "error" ? <button type="button" className="button button-secondary" onClick={startGemini} disabled={remoteAiActive}><Bot size={17} /> {remoteAiActive ? "Gemini đang hoạt động" : "Bật Gemini trợ giảng"}</button> : <button type="button" className="button button-danger" onClick={stopGemini}><MicOff size={17} /> Tắt Gemini</button>}<span className={`gemini-status ${remoteAiActive ? "listening" : gemini.status}`}>{remoteAiActive ? "shared" : gemini.status}</span></div>{gemini.error && <div className="gemini-error">{gemini.error}</div>}{gemini.outputTranscript && <div className="ai-transcript">{gemini.outputTranscript}</div>}</div></section></div>;
     if (phase === "round-result" && room.match) return <RoundResult room={room} data={resolution} currentReady={Boolean(currentMember?.isReady)} readyCount={readyCount} busy={busy} toggleReady={() => run(() => api(`/api/matches/${room.match!.id}/ready-next`, { method: "PATCH", body: JSON.stringify({ ready: !currentMember?.isReady }) }))} />;
     return <Result room={room} isHost={isHost} busy={busy} rematch={() => run(() => status("AI_DISCUSSION"))} />;
   }

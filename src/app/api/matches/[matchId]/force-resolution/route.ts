@@ -19,7 +19,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ mat
   const { data: q } = await admin.from("questions").select("id, time_limit, mode").eq("match_id", matchId).eq("round_number", match.current_round).single();
   if (!q) return NextResponse.json({ error: "Question not found" }, { status: 404 });
   const deadline = new Date(match.round_started_at ?? 0).getTime() + q.time_limit * 1000;
-  const spokenGrace = ["PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(q.mode) ? 15_000 : 2000;
+  const spokenGrace = ["PRONUNCIATION", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(q.mode) ? 15_000 : 2000;
   if (!match.round_started_at || Date.now() < deadline + spokenGrace) return NextResponse.json({ error: "The round deadline has not passed" }, { status: 409 });
 
   const { data: players } = await admin.from("match_players").select("user_id, current_streak, correct_count, incorrect_count, avg_response_ms").eq("match_id", matchId);

@@ -19,11 +19,13 @@ async function updateLearningHistory(admin: SupabaseClient, matchId: string, top
   if (answerError) throw answerError;
 
   const scoreFields: Record<string, string> = {
-    GRAMMAR: "grammar_score", LISTENING: "listening_score", SPELLING: "spelling_score",
+    GRAMMAR: "grammar_score", ERROR_CORRECTION: "grammar_score", CLOZE: "grammar_score", SENTENCE_BUILDER: "grammar_score",
+    LISTENING: "listening_score", AUDIO_CHOICE: "listening_score", STORY_LISTENING: "listening_score", MINIMAL_PAIRS: "listening_score", SPELLING: "spelling_score",
     TRANSLATION: "translation_score", VI_TO_EN: "vocabulary_score", EN_TO_VI: "vocabulary_score",
     CONTEXT: "vocabulary_score", DEFINITION: "vocabulary_score", BOSS: "vocabulary_score",
     MULTIPLE_CHOICE: "vocabulary_score", READING: "reading_score", PRONUNCIATION: "pronunciation_score",
-    SPEAKING: "speaking_score", ROLEPLAY: "speaking_score", DEBATE: "speaking_score", WRITING: "writing_score"
+    SHADOWING: "pronunciation_score", SPEAKING: "speaking_score", ROLEPLAY: "speaking_score", DEBATE: "speaking_score", WRITING: "writing_score",
+    COLLOCATION: "vocabulary_score"
   };
   const today = new Date();
   const todayDate = today.toISOString().slice(0, 10);
