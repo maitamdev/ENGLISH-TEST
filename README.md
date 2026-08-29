@@ -24,13 +24,20 @@ Repository không có seed, mock user, mock room, mock question, điểm mẫu h
 - AI Quality Gate có policy/prompt version, audit từng batch và bộ eval do quản trị viên tự tạo; không có test case giả được seed vào database.
 - Content Admin Studio, Operations Console và Trust & Safety queue dùng trực tiếp dữ liệu Supabase để import, moderation, điều tra report và xử lý alert.
 - PWA có lifecycle reconnect, wake lock trong trận, Web Push lời mời phòng và tự vô hiệu subscription đã hết hạn.
+- Adaptive CEFR placement sinh từng câu theo theta hiện tại, báo confidence/standard error và luôn ghi rõ đây không phải chứng chỉ CEFR chính thức.
+- Mastery graph chỉ cập nhật từ submission, FSRS review, speaking turn và placement response thật; tôn trọng `allow_learning_analytics`.
+- Shared Paths chỉ đọc snapshot evidence thật của cả hai sau khi người được mời đồng ý; trạng thái `proposed → generating → active`, theo dõi hoàn thành riêng và tự khóa khi một trong hai tài khoản chặn nhau.
+- AI teaching policy phía ứng dụng phát hiện timeout, cả hai cùng sai, rubric thấp, lệ thuộc hint hoặc thời điểm retrieval; chỉ chạy sau khi đáp án vòng đã được mở.
+- Match recap và Progress gom lại điểm mạnh, vùng cần ôn, lịch sử evidence và đường dẫn ôn lại chính trận đó.
+- Notification outbox bền vững nhắc FSRS/learning path, tôn trọng preference, quiet hours và múi giờ; không áp quota lên người học.
+- Curriculum Admin quản lý framework/descriptor thật với source URL, license, attribution, hash chống trùng và moderation audit; migration không seed curriculum.
 
 ## Cài Supabase
 
 1. Tạo project Supabase.
 2. Bật Anonymous Sign-Ins trong Authentication. Google OAuth là tùy chọn.
 3. Chạy `supabase/schema.sql`, sau đó các migration đúng thứ tự trong `supabase/README.md`.
-4. Chạy `supabase/tests/production_contracts.sql`, sau đó `supabase/tests/production_verification_contracts.sql` để kiểm tra contract bảo mật, fairness, admin, safety và quality gate.
+4. Chạy `supabase/tests/production_contracts.sql`, `supabase/tests/production_verification_contracts.sql`, rồi `supabase/tests/adaptive_learning_contracts.sql` để kiểm tra contract bảo mật, fairness, admin, safety, quality gate và adaptive learning.
 5. Lấy Project URL, publishable key và secret/service-role key.
 
 Không chạy `schema.sql` lần hai trên cùng project. Các migration không chèn dữ liệu học.
@@ -100,6 +107,7 @@ Chi tiết license và quy tắc provenance nằm trong `docs/DATA_SOURCES.md`.
 Để bootstrap chủ sở hữu đầu tiên, đặt UUID Supabase Auth của bạn vào `PLATFORM_ADMIN_USER_IDS` (nhiều UUID phân cách bằng dấu phẩy). Sau khi migration `20260830_production_verification.sql` được chạy, owner có thể mở:
 
 - `/admin/content`: chạy importer hợp pháp, bật/tắt nguồn và duyệt provenance.
+- `/admin/curriculum`: đăng ký framework có license, import descriptor thật và moderation trước khi placement được phép dùng descriptor đó.
 - `/admin/ai-evals`: tạo evaluation case bằng yêu cầu thật, chạy Groq thật và xem quality checks/version.
 - `/admin/operations`: theo dõi queue, telemetry, reconnect, audio, fairness và alert bền vững.
 - `/admin/safety`: nhận xử lý report, ghi kết quả điều tra và lưu quyết định có audit trail.
@@ -116,7 +124,7 @@ VAPID_PRIVATE_KEY=YOUR_PRIVATE_VAPID_KEY
 VAPID_SUBJECT=mailto:admin@your-domain.com
 ```
 
-Trình duyệt chỉ đăng ký sau khi người dùng chủ động bấm cho phép. Khi có lời mời phòng, server gửi notification thật và ghi trạng thái delivery; endpoint 404/410 sẽ tự vô hiệu subscription cũ.
+Trình duyệt chỉ đăng ký sau khi người dùng chủ động bấm cho phép. Khi có lời mời phòng, shared goal hoặc lịch FSRS đến hạn, maintenance worker đưa sự kiện vào outbox rồi gửi notification thật theo preference/quiet hours; endpoint 404/410 sẽ tự vô hiệu subscription cũ.
 
 ## Chạy và kiểm tra cuối
 

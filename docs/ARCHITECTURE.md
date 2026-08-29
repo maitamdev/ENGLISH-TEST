@@ -100,3 +100,15 @@ Generation batch đi qua deterministic Quality Gate trước khi được ghi v�
 ## PWA reliability
 
 Service worker chỉ cache immutable Next static assets và hình ảnh công khai; không cache navigation, API, transcript, đáp án hoặc dữ liệu phòng. Khi app resume/online, room client làm mới state và delivery receipt. Trong trận, Wake Lock được giữ khi nền tảng hỗ trợ. Push subscription thuộc từng user, secret chỉ đọc được bởi chính user/RLS và sender server; endpoint hết hạn tự bị vô hiệu.
+## Adaptive learning control plane
+
+`20260831_adaptive_learning_paths.sql` mở rộng hệ thống bằng một control plane không chứa seed data:
+
+1. Hoạt động thật tạo `skill_evidence_events`; trigger/RPC idempotent cập nhật `learner_skill_mastery` theo alpha/beta và confidence tăng theo số bằng chứng.
+2. Placement chỉ gửi public payload của item cho trình duyệt. Transcript nghe, đáp án và accepted answers nằm sau server boundary; mỗi response cập nhật theta, information, SEM và confidence trong một transaction PostgreSQL.
+3. Shared goal được tạo ở trạng thái `proposed` mà chưa đọc evidence của partner. Chỉ sau khi partner accept qua guarded RPC, hệ thống mới chuyển `proposed → generating → active`, snapshot mastery/placement/FSRS của đúng hai người và sinh path. RLS lẫn RPC đều vô hiệu hóa path khi một trong hai tài khoản chặn người còn lại.
+4. Sau khi round được reveal, intervention policy tạo tối đa hai hành động dạy có ưu tiên từ timeout/rubric/hint/kết quả. Gemini Live nhận instruction này trong phiên đang mở; trước reveal endpoint trả 409 và không sinh event.
+5. Match recap là bản tổng hợp deterministic từ questions/submissions, không nhờ model bịa nhận xét. Notification worker enqueue theo due state thật, claim outbox idempotent và tôn trọng quiet hours.
+6. Curriculum descriptor chỉ có hiệu lực khi framework enabled và descriptor được moderator approve. Mọi framework cần publisher, source URL, license URL và attribution; hash được tính ở server.
+
+CEFR level trong sản phẩm là diagnostic estimate phục vụ cá nhân hóa, không phải chứng chỉ. Phần curriculum hỗ trợ vocabulary, grammar, reading, listening, writing, speaking, phonology, mediation và online interaction để phản ánh Companion Volume mới hơn thay vì chỉ bốn kỹ năng truyền thống.

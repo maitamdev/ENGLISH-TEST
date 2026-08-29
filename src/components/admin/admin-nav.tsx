@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { Activity, Database, FlaskConical, LayoutDashboard, ShieldAlert } from "lucide-react";
+import { Activity, BookOpenCheck, Database, FlaskConical, LayoutDashboard, ShieldAlert } from "lucide-react";
 
-export function AdminNav({ active }: { active: "home" | "content" | "evals" | "operations" | "safety" }) {
+export function AdminNav({ active }: { active: "home" | "content" | "curriculum" | "evals" | "operations" | "safety" }) {
   const links = [
     { id: "home", href: "/admin", label: "Overview", icon: LayoutDashboard },
     { id: "content", href: "/admin/content", label: "Content", icon: Database },
+    { id: "curriculum", href: "/admin/curriculum", label: "Curriculum", icon: BookOpenCheck },
     { id: "evals", href: "/admin/ai-evals", label: "AI Evals", icon: FlaskConical },
     { id: "operations", href: "/admin/operations", label: "Operations", icon: Activity },
     { id: "safety", href: "/admin/safety", label: "Safety", icon: ShieldAlert }

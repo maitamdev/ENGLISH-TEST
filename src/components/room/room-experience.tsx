@@ -33,6 +33,7 @@ type AudioPreflight = {
   turnConfigured: boolean;
   message: string;
 };
+type AiIntervention = { id: string; policy_code: string; priority: number; instruction_vi: string; ui_message_vi: string; evidence: Record<string, unknown>; delivered_at: string | null };
 
 export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const router = useRouter();
@@ -67,6 +68,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const [roundBeginsIn, setRoundBeginsIn] = useState(0);
   const [countdown, setCountdown] = useState(3);
   const [resolutionState, setResolutionState] = useState<{ key: string; data: RoundResolutionData } | null>(null);
+  const [interventionState, setInterventionState] = useState<{ key: string; events: AiIntervention[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [audioOpen, setAudioOpen] = useState(false);
   const [micEnabled, setMicEnabled] = useState(false);
@@ -465,7 +467,13 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       if (!response.ok) throw Object.assign(new Error(body.error), { status: response.status });
       return body as RoundResolutionData;
     }).then((body) => {
-      if (active) setResolutionState({ key: `${matchId}:${round}`, data: body });
+      if (!active) return;
+      setResolutionState({ key: `${matchId}:${round}`, data: body });
+      void fetch(`/api/matches/${matchId}/interventions?round=${round}`, { signal: controller.signal, cache: "no-store" }).then(async (response) => {
+        const interventionBody = await response.json() as { events?: AiIntervention[]; error?: string };
+        if (!response.ok) throw Object.assign(new Error(interventionBody.error), { status: response.status });
+        if (active) setInterventionState({ key: `${matchId}:${round}`, events: interventionBody.events ?? [] });
+      }).catch((error: Error & { status?: number }) => { if (active && error.name !== "AbortError") { setInterventionState({ key: `${matchId}:${round}`, events: [] }); if (error.status !== 409) showError(error); } });
     }).catch((error: Error & { status?: number }) => {
       if (active && error.name !== "AbortError" && error.status !== 409) showError(error);
     });
@@ -513,9 +521,10 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   useEffect(() => {
     if (room.phase !== "round-result" || !room.match || !["listening", "speaking"].includes(gemini.status)) return;
     const key = `${room.match.id}:${room.match.currentRound}`;
-    if (geminiEvaluationRef.current === key || resolutionState?.key !== key) return;
+    if (geminiEvaluationRef.current === key || resolutionState?.key !== key || interventionState?.key !== key) return;
     const result = resolutionState.data;
     const feedbackStyle = resolveMatchSettings(room.match.blueprint).feedbackStyle;
+    const interventions = interventionState?.key === key ? interventionState.events : [];
     const playerResults = room.members.map((member) => {
       const submission = result.submissions.find((item) => item.userId === member.userId);
       if (!submission) return `${member.displayName}: không có câu trả lời.`;
@@ -530,6 +539,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       `Đáp án đúng: ${result.canonicalAnswer}.`,
       `Các đáp án chấp nhận: ${result.acceptedAnswers.join(", ")}.`,
       `Giải thích: ${result.explanation}`,
+      ...interventions.map((event) => `CAN THIỆP ${event.policy_code}: ${event.instruction_vi}`),
       `Dạng bài vừa chấm: ${room.match.question?.mode ?? "UNKNOWN"}. Với bài nghe hãy nhắc một chi tiết cần nghe; với SHADOWING hoặc phát âm hãy ưu tiên độ dễ hiểu, trọng âm, nhịp và ngữ điệu; với xếp/sửa câu hãy chỉ ra quy tắc ngữ pháp ngắn gọn.`,
       feedbackStyle === "CONCISE"
         ? "Hãy đánh giá ngay bằng tiếng Việt trong tối đa hai câu. Sau đó chờ hai người xác nhận NEXT ROUND."
@@ -537,8 +547,11 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
           ? "Hãy đánh giá ngay bằng tiếng Việt trong tối đa năm câu: kết quả, lý do, lỗi cần sửa và một ví dụ ngắn. Sau đó chờ hai người xác nhận NEXT ROUND."
           : "Hãy đánh giá ngay bằng tiếng Việt trong tối đa ba câu như một giáo viên thân thiện. Sau đó chờ hai người xác nhận NEXT ROUND."
     ].join("\n"));
-    if (sent) geminiEvaluationRef.current = key;
-  }, [gemini, gemini.sendText, gemini.status, resolutionState, room.match, room.members, room.phase]);
+    if (sent) {
+      geminiEvaluationRef.current = key;
+      if (interventions.length) void fetch(`/api/matches/${room.match.id}/interventions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ eventIds: interventions.map((event) => event.id) }), keepalive: true }).catch(() => undefined);
+    }
+  }, [gemini, gemini.sendText, gemini.status, interventionState, resolutionState, room.match, room.members, room.phase]);
 
   useEffect(() => {
     if (room.phase !== "round-result" || !room.match || !isHost || readyCount !== 2) return;
@@ -818,6 +831,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const roundExpired = Boolean(activeQuestion && activeRoundStartedAt && roundBeginsIn === 0 && seconds <= 0);
   const resolutionKey = room.match ? `${room.match.id}:${room.match.currentRound}` : "";
   const resolution = resolutionState?.key === resolutionKey ? resolutionState.data : null;
+  const interventions = interventionState?.key === resolutionKey ? interventionState.events : [];
   const moderationTarget = isHost ? room.members.find((member) => member.userId !== room.currentUserId) : null;
 
   return <main className="room-page" suppressHydrationWarning>
@@ -878,7 +892,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
         <div className="battle-coach"><div className="gemini-controls">{gemini.status === "off" || gemini.status === "error" ? <button type="button" className="button button-secondary" onClick={startGemini} disabled={remoteAiActive}><Bot size={17} /> {remoteAiActive ? "Gemini đang hoạt động" : "Bật Gemini trợ giảng"}</button> : <button type="button" className="button button-danger" onClick={stopGemini}><MicOff size={17} /> Tắt Gemini</button>}<span className={`gemini-status ${remoteAiActive ? "listening" : gemini.status}`}>{remoteAiActive ? "shared" : gemini.status}</span></div>{gemini.error && <div className="gemini-error">{gemini.error}</div>}{gemini.outputTranscript && <div className="ai-transcript">{gemini.outputTranscript}</div>}</div>
       </section>
     </div>;
-    if (phase === "round-result" && room.match) return <RoundResult room={room} data={resolution} currentReady={Boolean(currentMember?.isReady)} readyCount={readyCount} busy={busy} toggleReady={() => run(() => api(`/api/matches/${room.match!.id}/ready-next`, { method: "PATCH", body: JSON.stringify({ ready: !currentMember?.isReady }) }))} />;
+    if (phase === "round-result" && room.match) return <RoundResult room={room} data={resolution} interventions={interventions} currentReady={Boolean(currentMember?.isReady)} readyCount={readyCount} busy={busy} toggleReady={() => run(() => api(`/api/matches/${room.match!.id}/ready-next`, { method: "PATCH", body: JSON.stringify({ ready: !currentMember?.isReady }) }))} />;
     return <Result room={room} isHost={isHost} busy={busy} rematch={() => run(() => status("AI_DISCUSSION"))} />;
   }
 }
@@ -910,7 +924,7 @@ function Scorebar({ members, title, round, rounds, seconds }: { members: RoomMem
   return <section className="surface battle-scorebar">{members.slice(0, 1).map((member) => <div className="battle-player" key={member.userId}><Avatar name={member.displayName} src={member.avatarUrl ?? undefined} size={52} /><div><strong>{member.displayName}</strong><span>{member.streak} streak</span></div><span className="score">{member.score}</span></div>)}<div className="round-meta"><strong>{title}</strong><span>Round {round} / {rounds}</span><div className="timer-ring">{seconds}</div></div>{members.slice(1, 2).map((member) => <div className="battle-player right" key={member.userId}><Avatar name={member.displayName} src={member.avatarUrl ?? undefined} size={52} /><div><strong>{member.displayName}</strong><span>{member.streak} streak</span></div><span className="score">{member.score}</span></div>)}</section>;
 }
 
-function RoundResult({ room, data, currentReady, readyCount, busy, toggleReady }: { room: RoomBootstrap; data: RoundResolutionData | null; currentReady: boolean; readyCount: number; busy: boolean; toggleReady: () => void }) {
+function RoundResult({ room, data, interventions, currentReady, readyCount, busy, toggleReady }: { room: RoomBootstrap; data: RoundResolutionData | null; interventions: AiIntervention[]; currentReady: boolean; readyCount: number; busy: boolean; toggleReady: () => void }) {
   if (!data) return <Loading title="Revealing the round" detail="Loading the protected answer and both real submissions." />;
   const isFinalRound = Boolean(room.match && room.match.currentRound >= room.match.roundCount);
   return <section className="surface center-stage"><div className="round-result-card"><div className="round-result-head"><CheckCircle2 size={30} className="text-accent" /><h1>{data.canonicalAnswer}</h1><p className="text-muted">{data.explanation}</p></div><div className="resolution-grid">{room.members.map((member) => {
@@ -919,7 +933,7 @@ function RoundResult({ room, data, currentReady, readyCount, busy, toggleReady }
     const correct = Boolean(submission?.correct);
     const verdict = !submission ? "Không có đáp án" : submission.rubricScore != null ? `${Math.round(submission.rubricScore)}/100 · +${submission.points}` : correct && timedOut ? "Đúng nhưng hết giờ · +0" : correct && submission.matchType === "semantic_appeal" ? `Đúng nghĩa tương đương · +${submission.points}` : correct && submission.matchType === "minor_typo" ? `Chấp nhận lỗi gõ nhỏ · +${submission.points}` : correct ? `Đúng · +${submission.points}` : timedOut ? "Hết giờ · +0" : "Sai · +0";
     return <article className="resolution" key={member.userId}><strong>{member.displayName}</strong><div className="resolution-answer">{submission?.answer === "⏱ Hết giờ" ? "Hết giờ" : submission?.answer ?? "Chưa trả lời"}</div>{submission?.matchedAnswer && ["minor_typo", "semantic_appeal"].includes(submission.matchType ?? "") && <small>Khớp với: {submission.matchedAnswer}</small>}{submission?.hintsUsed ? <small>Đã dùng {submission.hintsUsed} gợi ý</small> : null}{submission?.scoreComponents && submission.rubricScore == null ? <div className="score-breakdown"><span>Nền +{submission.scoreComponents.base ?? 0}</span><span>Độ khó +{submission.scoreComponents.difficulty ?? 0}</span><span>Tốc độ +{submission.scoreComponents.speed ?? 0}</span><span>Chuỗi +{submission.scoreComponents.streak ?? 0}</span>{(submission.scoreComponents.hintDeduction ?? 0) > 0 ? <span>Gợi ý -{submission.scoreComponents.hintDeduction}</span> : null}</div> : null}{submission?.assessment && <div className="round-rubric">{submission.assessment.task != null ? <><span>Yêu cầu {Math.round(submission.assessment.task)}</span><span>Mạch lạc {Math.round(submission.assessment.coherence ?? 0)}</span></> : <><span>Nội dung {Math.round(submission.assessment.content ?? 0)}</span><span>Phát âm {Math.round(submission.assessment.pronunciation ?? 0)}</span><span>Trôi chảy {Math.round(submission.assessment.fluency ?? 0)}</span></>}<span>Ngữ pháp {Math.round(submission.assessment.grammar ?? 0)}</span><span>Từ vựng {Math.round(submission.assessment.vocabulary ?? 0)}</span><p>{submission.assessment.feedbackVi}</p></div>}<div className="resolution-meta"><span>{submission ? `${(submission.responseMs / 1000).toFixed(2)}s` : "-"}</span><span className={correct ? "text-accent" : "review-wrong"}>{verdict}</span></div>{submission && member.userId === room.currentUserId && !correct && !timedOut && submission.matchType !== "rubric" && <AppealButton submissionId={submission.id} />}</article>;
-  })}</div><div className="ai-transcript">Đáp án được chấp nhận: {data.acceptedAnswers.join(", ")}</div><div className="ready-summary"><strong>{readyCount}/2 người đã xác nhận</strong><span>{readyCount === 0 ? `Cả hai bấm ${isFinalRound ? "FINISH" : "NEXT ROUND"} khi đã xem xong kết quả.` : readyCount === 1 ? "Đang chờ người còn lại xác nhận." : isFinalRound ? "Đang chốt kết quả trận." : "Đang chuyển sang câu tiếp theo."}</span></div><button className={currentReady ? "button button-secondary button-wide" : "button button-primary button-wide"} disabled={busy || readyCount === 2} onClick={toggleReady}>{currentReady ? <><RotateCcw size={17} /> Hủy xác nhận</> : <>{isFinalRound ? "FINISH — Tôi đồng ý" : "NEXT ROUND — Tôi sẵn sàng"}<ArrowRight size={17} /></>}</button></div></section>;
+  })}</div><div className="ai-transcript">Đáp án được chấp nhận: {data.acceptedAnswers.join(", ")}</div>{interventions.length > 0 && <div className="intervention-panel"><span className="eyebrow"><Sparkles size={13} /> AI TEACHING POLICY</span>{interventions.map((event) => <p key={event.id}>{event.ui_message_vi}</p>)}</div>}<div className="ready-summary"><strong>{readyCount}/2 người đã xác nhận</strong><span>{readyCount === 0 ? `Cả hai bấm ${isFinalRound ? "FINISH" : "NEXT ROUND"} khi đã xem xong kết quả.` : readyCount === 1 ? "Đang chờ người còn lại xác nhận." : isFinalRound ? "Đang chốt kết quả trận." : "Đang chuyển sang câu tiếp theo."}</span></div><button className={currentReady ? "button button-secondary button-wide" : "button button-primary button-wide"} disabled={busy || readyCount === 2} onClick={toggleReady}>{currentReady ? <><RotateCcw size={17} /> Hủy xác nhận</> : <>{isFinalRound ? "FINISH — Tôi đồng ý" : "NEXT ROUND — Tôi sẵn sàng"}<ArrowRight size={17} /></>}</button></div></section>;
 }
 
 function AppealButton({ submissionId }: { submissionId: string }) {
@@ -945,5 +959,5 @@ function AppealButton({ submissionId }: { submissionId: string }) {
 function Result({ room, isHost, busy, rematch }: { room: RoomBootstrap; isHost: boolean; busy: boolean; rematch: () => void }) {
   const winner = room.members.find((member) => member.userId === room.match?.winnerId); const scores = [...room.members].sort((a, b) => b.score - a.score);
   const cooperative = resolveMatchSettings(room.match?.blueprint).experience === "COOP";
-  return <div className="result-stage"><section className="surface winner-panel"><Crown size={34} className="text-accent" />{cooperative ? <div className="coop-finish"><Bot size={44} /><span>{scores.reduce((total, member) => total + member.score, 0)}</span><small>điểm đội</small></div> : winner ? <Avatar name={winner.displayName} src={winner.avatarUrl ?? undefined} size={110} speaking /> : <div className="empty-avatar large" />}<h1>{cooperative ? "Hoàn thành cùng nhau" : winner ? "Winner" : "Draw"}</h1><h2>{cooperative ? "Hai bạn đã chinh phục trận học nhóm" : winner?.displayName ?? "Equal score"}</h2><div className="final-score">{scores.map((member) => member.score).join(" - ")}</div><div className="winner-actions">{isHost && <button className="button button-primary" disabled={busy} onClick={rematch}><RotateCcw size={17} /> Trận mới</button>}<Link className="button button-secondary" href="/dashboard">Dashboard</Link></div></section><section className="surface review-panel"><div><span className="ai-badge"><Sparkles size={15} /> Đã lưu trận</span><h2>Toàn bộ từ, đáp án và kết quả của hai người đã sẵn sàng để ôn lại.</h2></div><div className="review-items">{scores.map((member) => <div className="review-item" key={member.userId}>{cooperative || member.userId === room.match?.winnerId ? <CheckCircle2 size={18} className="review-correct" /> : <XCircle size={18} className="text-muted" />}<div><strong>{member.displayName}</strong><p>{member.streak} streak hiện tại</p></div><span>{member.score}</span></div>)}</div>{room.match && <Link className="button button-primary button-wide" href={`/review/${room.match.id}`}>Ôn lại trận này <ArrowRight size={17} /></Link>}</section></div>;
+  return <div className="result-stage"><section className="surface winner-panel"><Crown size={34} className="text-accent" />{cooperative ? <div className="coop-finish"><Bot size={44} /><span>{scores.reduce((total, member) => total + member.score, 0)}</span><small>điểm đội</small></div> : winner ? <Avatar name={winner.displayName} src={winner.avatarUrl ?? undefined} size={110} speaking /> : <div className="empty-avatar large" />}<h1>{cooperative ? "Hoàn thành cùng nhau" : winner ? "Winner" : "Draw"}</h1><h2>{cooperative ? "Hai bạn đã chinh phục trận học nhóm" : winner?.displayName ?? "Equal score"}</h2><div className="final-score">{scores.map((member) => member.score).join(" - ")}</div><div className="winner-actions">{isHost && <button className="button button-primary" disabled={busy} onClick={rematch}><RotateCcw size={17} /> Trận mới</button>}<Link className="button button-secondary" href="/dashboard">Dashboard</Link></div></section><section className="surface review-panel"><div><span className="ai-badge"><Sparkles size={15} /> Đã lưu trận</span><h2>Toàn bộ từ, đáp án và kết quả của hai người đã sẵn sàng để ôn lại.</h2></div><div className="review-items">{scores.map((member) => <div className="review-item" key={member.userId}>{cooperative || member.userId === room.match?.winnerId ? <CheckCircle2 size={18} className="review-correct" /> : <XCircle size={18} className="text-muted" />}<div><strong>{member.displayName}</strong><p>{member.streak} streak hiện tại</p></div><span>{member.score}</span></div>)}</div>{room.match && <><Link className="button button-primary button-wide" href={`/review/${room.match.id}`}>Ôn lại trận này <ArrowRight size={17} /></Link><Link className="button button-secondary button-wide" href={`/progress?matchId=${room.match.id}`}>Tổng kết &amp; mastery <Sparkles size={17} /></Link></>}</section></div>;
 }

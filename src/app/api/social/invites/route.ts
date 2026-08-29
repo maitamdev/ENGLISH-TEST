@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { sendPushToUser } from "@/lib/notifications/web-push";
+import { dispatchNotificationOutbox } from "@/lib/notifications/outbox";
 
 const createSchema = z.object({ roomId: z.string().uuid(), recipientId: z.string().uuid(), message: z.string().trim().max(200).optional() });
 const updateSchema = z.object({ inviteId: z.string().uuid(), action: z.enum(["accept","decline","cancel"]) });
@@ -27,17 +27,15 @@ export async function POST(request: Request) {
   if (!friendship) return NextResponse.json({ error: "Chỉ có thể mời bạn bè đã xác nhận" }, { status: 403 });
   const { data, error } = await admin.from("room_invites").insert({ room_id: parsed.data.roomId, sender_id: authData.user.id, recipient_id: parsed.data.recipientId, message: parsed.data.message || null }).select("id").single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  const [{ data: sender }, { data: room }] = await Promise.all([
+  const [{ data: sender }, { data: room }, { data: pushPreference }] = await Promise.all([
     admin.from("profiles").select("display_name").eq("id", authData.user.id).maybeSingle(),
-    admin.from("rooms").select("code").eq("id", parsed.data.roomId).maybeSingle()
+    admin.from("rooms").select("code").eq("id", parsed.data.roomId).maybeSingle(),
+    admin.from("notification_preferences").select("room_invites").eq("user_id", parsed.data.recipientId).maybeSingle()
   ]);
-  await sendPushToUser(admin, parsed.data.recipientId, {
-    type: "room_invite",
-    title: "Lời mời học cùng",
-    body: `${sender?.display_name ?? "Một người bạn"} mời bạn vào phòng ${room?.code ?? "LexiDuel"}.`,
-    url: "/community",
-    tag: `room-invite-${data.id}`
-  }).catch(() => undefined);
+  if (pushPreference?.room_invites !== false) {
+    await admin.from("notification_outbox").upsert({ user_id: parsed.data.recipientId, notification_type: "room_invite", dedupe_key: `room-invite:${data.id}`, title: "Lời mời học cùng", body: `${sender?.display_name ?? "Một người bạn"} mời bạn vào phòng ${room?.code ?? "LexiDuel"}.`, destination_url: "/community", payload: { inviteId: data.id, roomId: parsed.data.roomId }, scheduled_for: new Date().toISOString() }, { onConflict: "dedupe_key", ignoreDuplicates: true });
+    await dispatchNotificationOutbox(admin, new Date(), { userId: parsed.data.recipientId }).catch(() => undefined);
+  }
   return NextResponse.json(data, { status: 201 });
 }
 export async function PATCH(request: Request) {
