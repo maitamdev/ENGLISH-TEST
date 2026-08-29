@@ -33,13 +33,14 @@ Repository không có seed, mock user, mock room, mock question, điểm mẫu h
 - Curriculum Admin quản lý framework/descriptor thật với source URL, license, attribution, hash chống trùng và moderation audit; migration không seed curriculum.
 - Match Studio có Mode Mixer và cho lưu không giới hạn cấu hình cá nhân; mixed/co-op có thể sắp câu theo mastery hoặc FSRS đến hạn, điều chỉnh đường độ khó và lưu adaptive audit theo từng trận.
 - Trận nghe/nói có readiness gate theo micro, audio output, TURN và độ trễ; sau mỗi submission, remediation queue tự tạo từ lỗi, timeout, hint, recall chậm hoặc rubric thấp.
+- Arena Insights so sánh hai người từ match thật: thắng/hòa/thua, accuracy và tốc độ theo skill, lịch sử gần đây, fairness, reconnect compensation và remediation riêng của người xem.
 
 ## Cài Supabase
 
 1. Tạo project Supabase.
 2. Bật Anonymous Sign-Ins trong Authentication. Google OAuth là tùy chọn.
 3. Chạy `supabase/schema.sql`, sau đó các migration đúng thứ tự trong `supabase/README.md`.
-4. Chạy `supabase/tests/production_contracts.sql`, `supabase/tests/production_verification_contracts.sql`, `supabase/tests/adaptive_learning_contracts.sql`, rồi `supabase/tests/arena_orchestration_contracts.sql` để kiểm tra contract bảo mật, fairness, admin, safety, quality gate và adaptive arena.
+4. Chạy `supabase/tests/production_contracts.sql`, `supabase/tests/production_verification_contracts.sql`, `supabase/tests/adaptive_learning_contracts.sql`, `supabase/tests/arena_orchestration_contracts.sql`, rồi `supabase/tests/arena_insights_contracts.sql` để kiểm tra contract bảo mật, fairness, admin, safety, quality gate và adaptive arena.
 5. Lấy Project URL, publishable key và secret/service-role key.
 
 Không chạy `schema.sql` lần hai trên cùng project. Các migration không chèn dữ liệu học.

@@ -14,6 +14,7 @@ export function SiteHeader({ app = false, displayName }: { app?: boolean; displa
               <Link href="/review">Review</Link>
               <Link href="/study">Study</Link>
               <Link href="/progress">Progress</Link>
+              <Link href="/insights">Insights</Link>
               <Link href="/paths">Paths</Link>
               <Link href="/speaking">Speaking</Link>
               <Link href="/community">Community</Link>

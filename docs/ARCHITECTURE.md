@@ -122,3 +122,5 @@ CEFR level trong sản phẩm là diagnostic estimate phục vụ cá nhân hóa
 3. Với trận có nghe/nói, START kiểm tra presence mới, clock RTT và audio preflight. Kết quả thiết bị được ghi vào `room_readiness_events`; client không có quyền tự insert audit row.
 4. Trigger sau submission tạo `match_remediation_items` từ evidence thật. Chính sách `WRONG_ONLY` chỉ ghi câu sai/timeout; `AUTO` còn nhận hint dependency, low rubric và slow recall. Người dùng chỉ đổi trạng thái qua guarded RPC.
 5. Heartbeat ghi connectivity incident khi mất mạng giữa vòng. Khi client trở lại, PostgreSQL bù downtime vào deadline chung cho cả hai, tối đa 15 giây mỗi incident và 30 giây mỗi vòng để không thể lợi dụng reconnect; toàn bộ incident và phần bù đều có audit.
+
+`20260902_arena_insights.sql` cung cấp một RPC aggregate thay vì cho client tải raw submission của đối phương. RPC bắt buộc accepted friendship, kiểm tra block hai chiều, chỉ tổng hợp các match cả hai thật sự cùng tham gia và không trả mastery hay remediation riêng của partner. Màn hình `/insights` vì vậy có thể hiển thị head-to-head skill/fairness trend mà vẫn giữ boundary riêng tư.
