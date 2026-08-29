@@ -24,7 +24,12 @@ export const matchSettingsSchema = z.object({
   showTranscriptAfter: z.boolean().default(true),
   speakingSeconds: z.number().int().min(10).max(120).default(45),
   shadowingSeconds: z.number().int().min(10).max(90).default(30),
-  answerReveal: z.literal("AFTER_BOTH").default("AFTER_BOTH")
+  answerReveal: z.literal("AFTER_BOTH").default("AFTER_BOTH"),
+  sequencingPolicy: z.enum(["BALANCED", "WEAKNESS_FIRST", "SPACED_RETRIEVAL"]).default("BALANCED"),
+  difficultyCurve: z.enum(["STEADY", "RAMP_UP", "ADAPTIVE"]).default("ADAPTIVE"),
+  remediationPolicy: z.enum(["AUTO", "WRONG_ONLY", "OFF"]).default("AUTO"),
+  fairnessMode: z.enum(["STANDARD", "STRICT"]).default("STANDARD"),
+  requireAudioPreflight: z.boolean().default(true)
 });
 
 export const battleBlueprintSchema = z.object({
@@ -71,18 +76,28 @@ export const generatedGamePackSchema = z.object({
   if (new Set(normalizedPrompts).size !== normalizedPrompts.length) context.addIssue({ code: "custom", path: ["questions"], message: "Question prompts must be unique." });
 });
 
+export const gameGenerationPreferencesSchema = z.object({
+  presetId: z.string().trim().min(1).max(40).optional(),
+  rounds: z.number().int().min(5).max(50).optional(),
+  timePerQuestion: z.number().int().min(10).max(120).optional(),
+  level: z.enum(["A1", "A2", "B1", "B2", "C1", "C2", "Mixed"]).optional(),
+  difficulty: z.enum(["Easy", "Medium", "Hard"]).optional(),
+  modes: z.array(z.object({ type: questionModeSchema, count: z.number().int().positive() })).min(1).optional(),
+  settings: matchSettingsSchema.partial().optional()
+});
+
+export const arenaAdaptiveContextSchema = z.object({
+  skillMastery: z.record(z.string(), z.number().min(0).max(100)).default({}),
+  reviewDueBySkill: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  evidenceCount: z.number().int().nonnegative().default(0),
+  analyticsParticipants: z.number().int().min(0).max(2).default(0)
+});
+
 export const gameGenerationRequestSchema = z.object({
   roomId: z.string().uuid(),
   request: z.string().trim().min(3).max(1000),
-  preferences: z.object({
-    presetId: z.string().trim().min(1).max(40).optional(),
-    rounds: z.number().int().min(5).max(50).optional(),
-    timePerQuestion: z.number().int().min(10).max(120).optional(),
-    level: z.enum(["A1", "A2", "B1", "B2", "C1", "C2", "Mixed"]).optional(),
-    difficulty: z.enum(["Easy", "Medium", "Hard"]).optional(),
-    modes: z.array(z.object({ type: questionModeSchema, count: z.number().int().positive() })).min(1).optional(),
-    settings: matchSettingsSchema.partial().optional()
-  }).optional()
+  preferences: gameGenerationPreferencesSchema.optional(),
+  adaptiveContext: arenaAdaptiveContextSchema.optional()
 });
 
 export type BattleBlueprintInput = z.infer<typeof battleBlueprintSchema>;

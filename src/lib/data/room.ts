@@ -24,7 +24,7 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
 
   const [membersResult, matchResult, generationResult, aiSessionResult] = await Promise.all([
     supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, last_seen_at, device_state, connection_quality, moderation_muted, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
-    supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, round_deadline_at, round_epoch, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, round_deadline_at, round_epoch, round_extension_ms, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("generation_jobs").select("status, stage, total_rounds, completed_rounds, error_message, updated_at").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("ai_sessions").select("id, coordinator_id, heartbeat_at").eq("room_id", room.id).is("ended_at", null).order("started_at", { ascending: false }).limit(1).maybeSingle()
   ]);
@@ -53,6 +53,7 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
       status: currentMatch.status, blueprint: currentMatch.blueprint, roundCount: currentMatch.round_count,
       currentRound: currentMatch.current_round, roundStartedAt: currentMatch.round_started_at, winnerId: currentMatch.winner_id,
       roundDeadlineAt: currentMatch.round_deadline_at, roundEpoch: currentMatch.round_epoch,
+      connectivityExtensionMs: currentMatch.round_extension_ms ?? 0,
       question: questionResult.data ? {
         id: questionResult.data.id, mode: questionResult.data.mode, prompt: questionResult.data.prompt,
         instruction: questionResult.data.instruction, level: questionResult.data.level,

@@ -41,6 +41,10 @@ export type FeedbackStyle = "CONCISE" | "TEACHER" | "DETAILED";
 export type AnswerStrictness = "LENIENT" | "STANDARD" | "STRICT";
 export type ListeningAccent = "US" | "UK" | "AU";
 export type ListeningFocus = "WORDS" | "SENTENCES" | "STORIES" | "MIXED";
+export type SequencingPolicy = "BALANCED" | "WEAKNESS_FIRST" | "SPACED_RETRIEVAL";
+export type DifficultyCurve = "STEADY" | "RAMP_UP" | "ADAPTIVE";
+export type RemediationPolicy = "AUTO" | "WRONG_ONLY" | "OFF";
+export type FairnessMode = "STANDARD" | "STRICT";
 
 export type MatchSettings = {
   experience: MatchExperience;
@@ -61,6 +65,18 @@ export type MatchSettings = {
   speakingSeconds: number;
   shadowingSeconds: number;
   answerReveal: "AFTER_BOTH";
+  sequencingPolicy: SequencingPolicy;
+  difficultyCurve: DifficultyCurve;
+  remediationPolicy: RemediationPolicy;
+  fairnessMode: FairnessMode;
+  requireAudioPreflight: boolean;
+};
+
+export type ArenaAdaptiveContext = {
+  skillMastery: Record<string, number>;
+  reviewDueBySkill: Record<string, number>;
+  evidenceCount: number;
+  analyticsParticipants: number;
 };
 
 export type GameGenerationPreferences = {

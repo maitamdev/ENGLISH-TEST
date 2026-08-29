@@ -112,3 +112,13 @@ Service worker chỉ cache immutable Next static assets và hình ảnh công kh
 6. Curriculum descriptor chỉ có hiệu lực khi framework enabled và descriptor được moderator approve. Mọi framework cần publisher, source URL, license URL và attribution; hash được tính ở server.
 
 CEFR level trong sản phẩm là diagnostic estimate phục vụ cá nhân hóa, không phải chứng chỉ. Phần curriculum hỗ trợ vocabulary, grammar, reading, listening, writing, speaking, phonology, mediation và online interaction để phản ánh Companion Volume mới hơn thay vì chỉ bốn kỹ năng truyền thống.
+
+## Arena orchestration
+
+`20260901_arena_orchestration.sql` nối game engine với learning control plane mà không tạo content mẫu:
+
+1. Match Studio preset do người dùng sở hữu được bảo vệ bằng RLS. Cấu hình lưu toàn bộ mode mix và policy nhưng không lưu câu hỏi hoặc đáp án.
+2. Khi enqueue generation, server tổng hợp mastery và review-card đến hạn của đúng hai thành viên đã cho phép analytics. Worker dùng aggregate không định danh để sắp mode `balanced`, `weakness_first` hoặc `spaced_retrieval`, đồng thời tạo difficulty curve có audit trên `match_adaptive_contexts`.
+3. Với trận có nghe/nói, START kiểm tra presence mới, clock RTT và audio preflight. Kết quả thiết bị được ghi vào `room_readiness_events`; client không có quyền tự insert audit row.
+4. Trigger sau submission tạo `match_remediation_items` từ evidence thật. Chính sách `WRONG_ONLY` chỉ ghi câu sai/timeout; `AUTO` còn nhận hint dependency, low rubric và slow recall. Người dùng chỉ đổi trạng thái qua guarded RPC.
+5. Heartbeat ghi connectivity incident khi mất mạng giữa vòng. Khi client trở lại, PostgreSQL bù downtime vào deadline chung cho cả hai, tối đa 15 giây mỗi incident và 30 giây mỗi vòng để không thể lợi dụng reconnect; toàn bộ incident và phần bù đều có audit.

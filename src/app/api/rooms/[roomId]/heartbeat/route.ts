@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ roo
   const parsed = heartbeatSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid room heartbeat" }, { status: 400 });
   const supabase = await createSupabaseServerClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured" }, { status: 503 });
+  const admin = createSupabaseAdminClient();
+  if (!supabase || !admin) return NextResponse.json({ error: "Supabase is not configured" }, { status: 503 });
   const { data: authData } = await supabase.auth.getUser();
   if (!authData.user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
 
@@ -26,6 +28,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ roo
       target_client_session_id: parsed.data.clientSessionId
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    await admin.rpc("record_match_connectivity", { target_room_id: roomId, target_user_id: authData.user.id, target_client_session_id: parsed.data.clientSessionId, target_connected: false });
     return NextResponse.json({ disconnected: true }, { headers: { "Cache-Control": "private, no-store" } });
   }
 
@@ -36,5 +39,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ roo
     target_connection_quality: parsed.data.connectionQuality
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-  return NextResponse.json(data, { headers: { "Cache-Control": "private, no-store" } });
+  const { data: connectivity } = await admin.rpc("record_match_connectivity", { target_room_id: roomId, target_user_id: authData.user.id, target_client_session_id: parsed.data.clientSessionId, target_connected: true });
+  return NextResponse.json({ ...(data && typeof data === "object" ? data : {}), connectivity }, { headers: { "Cache-Control": "private, no-store" } });
 }

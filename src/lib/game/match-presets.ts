@@ -18,7 +18,12 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   showTranscriptAfter: true,
   speakingSeconds: 45,
   shadowingSeconds: 30,
-  answerReveal: "AFTER_BOTH"
+  answerReveal: "AFTER_BOTH",
+  sequencingPolicy: "BALANCED",
+  difficultyCurve: "ADAPTIVE",
+  remediationPolicy: "AUTO",
+  fairnessMode: "STANDARD",
+  requireAudioPreflight: true
 };
 
 export type MatchPreset = {
@@ -44,8 +49,8 @@ export const MATCH_PRESETS: MatchPreset[] = [
   { id: "writing-workshop", label: "Thi viết", description: "Viết phản hồi, sửa ngữ pháp và dịch theo rubric.", skill: "Writing", rounds: 8, timePerQuestion: 90, modes: [{ type: "WRITING", count: 4 }, { type: "GRAMMAR", count: 2 }, { type: "TRANSLATION", count: 2 }], settings: {} },
   { id: "sentence-forge", label: "Xưởng câu", description: "Xếp từ, điền chỗ trống và hoàn thiện câu tự nhiên.", skill: "Grammar", rounds: 10, timePerQuestion: 45, modes: [{ type: "SENTENCE_BUILDER", count: 4 }, { type: "CLOZE", count: 3 }, { type: "COLLOCATION", count: 3 }], settings: {} },
   { id: "grammar-repair", label: "Sửa lỗi tốc độ", description: "Tìm và sửa lỗi trong câu theo đúng ngữ cảnh.", skill: "Grammar", rounds: 10, timePerQuestion: 50, modes: [{ type: "ERROR_CORRECTION", count: 5 }, { type: "CLOZE", count: 3 }, { type: "GRAMMAR", count: 2 }], settings: {} },
-  { id: "mixed-cefr", label: "Đấu tổng hợp", description: "Nghe, đọc, từ vựng, ngữ pháp và nói trong một trận.", skill: "Mixed", rounds: 12, timePerQuestion: 45, modes: [{ type: "VI_TO_EN", count: 2 }, { type: "LISTENING", count: 2 }, { type: "READING", count: 2 }, { type: "GRAMMAR", count: 2 }, { type: "MULTIPLE_CHOICE", count: 2 }, { type: "SPEAKING", count: 2 }], settings: { adaptiveDifficulty: true } },
-  { id: "coop-study", label: "Học cùng nhau", description: "Hai người cùng tích điểm đội và được AI giải thích kỹ.", skill: "Co-op", rounds: 10, timePerQuestion: 55, modes: [{ type: "CONTEXT", count: 2 }, { type: "LISTENING", count: 2 }, { type: "READING", count: 2 }, { type: "GRAMMAR", count: 2 }, { type: "SPEAKING", count: 2 }], settings: { experience: "COOP", feedbackStyle: "DETAILED", aiPresence: "ACTIVE", allowHints: true, maxHints: 2 } }
+  { id: "mixed-cefr", label: "Đấu tổng hợp", description: "Nghe, đọc, từ vựng, ngữ pháp và nói trong một trận.", skill: "Mixed", rounds: 12, timePerQuestion: 45, modes: [{ type: "VI_TO_EN", count: 2 }, { type: "LISTENING", count: 2 }, { type: "READING", count: 2 }, { type: "GRAMMAR", count: 2 }, { type: "MULTIPLE_CHOICE", count: 2 }, { type: "SPEAKING", count: 2 }], settings: { adaptiveDifficulty: true, sequencingPolicy: "WEAKNESS_FIRST", difficultyCurve: "ADAPTIVE" } },
+  { id: "coop-study", label: "Học cùng nhau", description: "Hai người cùng tích điểm đội và được AI giải thích kỹ.", skill: "Co-op", rounds: 10, timePerQuestion: 55, modes: [{ type: "CONTEXT", count: 2 }, { type: "LISTENING", count: 2 }, { type: "READING", count: 2 }, { type: "GRAMMAR", count: 2 }, { type: "SPEAKING", count: 2 }], settings: { experience: "COOP", feedbackStyle: "DETAILED", aiPresence: "ACTIVE", allowHints: true, maxHints: 2, sequencingPolicy: "SPACED_RETRIEVAL", remediationPolicy: "AUTO" } }
 ];
 
 export function resolveMatchSettings(blueprint?: Pick<BattleBlueprint, "settings"> | null): MatchSettings {

@@ -1054,3 +1054,34 @@ a { color: inherit; text-decoration: none; }
 .curriculum-list p { margin: 12px 0; line-height: 1.6; }
 .curriculum-list small, .curriculum-list footer { color: var(--muted); font-size: .75rem; }
 .curriculum-list a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.saved-preset-studio { grid-column: 1 / -1; display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface-soft); }
+.mode-mixer { grid-column: 1 / -1; display: grid; gap: 12px; }
+.mode-mixer > p { margin: 0; color: var(--muted); font-size: .78rem; }
+.mode-mixer > div { display: grid; gap: 7px; }
+.mode-mixer > div > strong { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; }
+.mode-mixer > div > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.mode-mixer button { padding: 7px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: .7rem; cursor: pointer; }
+.mode-mixer button.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.saved-preset-studio > div:first-child { display: grid; gap: 4px; }
+.saved-preset-studio > div:first-child span { color: var(--muted); font-size: .78rem; }
+.saved-preset-create { display: grid; grid-template-columns: 1fr auto; gap: 9px; }
+.saved-preset-create input { min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--text); }
+.saved-preset-list { display: grid; gap: 7px; }
+.saved-preset-list > div { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; }
+.saved-preset-list button { min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.saved-preset-list button:first-child { display: flex; align-items: center; justify-content: space-between; text-align: left; color: var(--text); }
+.saved-preset-list small { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); }
+.readiness-roster { margin: 16px 0; padding: 15px; display: grid; grid-template-columns: auto 1fr 1fr; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 13px; text-align: left; }
+.readiness-roster > div { padding: 10px; display: grid; border-radius: 10px; background: var(--surface-soft); }
+.readiness-roster > div.ready { border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.readiness-roster > div.blocked { border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.readiness-roster small { color: var(--muted); }
+.fairness-extension { display: inline-flex; margin-left: 8px; padding: 5px 8px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 999px; color: var(--accent); font-size: .7rem; }
+.remediation-list { display: grid; gap: 9px; }
+.remediation-list article { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 13px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-soft); }
+.remediation-priority { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font: 800 .85rem var(--font-mono); }
+.remediation-list article > div:nth-child(2) { display: grid; gap: 4px; }
+.remediation-list article > div:nth-child(2) span, .remediation-list article small { color: var(--muted); font-size: .75rem; }
+.remediation-list article > div:last-child { display: flex; gap: 7px; }
+.remediation-list a, .remediation-list button { padding: 8px 10px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--text); font-size: .76rem; cursor: pointer; }
+@media (max-width: 720px) { .readiness-roster { grid-template-columns: 1fr; } .remediation-list article { grid-template-columns: 42px 1fr; } .remediation-list article > div:last-child { grid-column: 2; flex-wrap: wrap; } }

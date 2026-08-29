@@ -109,6 +109,7 @@ export type MatchView = {
   roundStartedAt: string | null;
   roundDeadlineAt: string | null;
   roundEpoch: number;
+  connectivityExtensionMs: number;
   winnerId: string | null;
   question: PublicQuestion | null;
   submissions: SubmissionView[];

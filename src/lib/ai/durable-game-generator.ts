@@ -8,6 +8,7 @@ import { DEFAULT_MATCH_SETTINGS, getMatchPreset } from "@/lib/game/match-presets
 import { recordTelemetry } from "@/lib/observability/telemetry";
 import { battleBlueprintSchema, gameGenerationRequestSchema, generatedQuestionSchema, matchSettingsSchema, type BattleBlueprintInput } from "@/lib/validation/game";
 import { assessQuestionBatch, QUESTION_PROMPT_VERSION, QUESTION_QUALITY_POLICY_VERSION, type QualityReport } from "./question-quality";
+import { ARENA_ADAPTATION_VERSION, buildAdaptiveModeSchedule, buildDifficultySchedule } from "@/lib/learning/arena-adaptation";
 
 type GeneratedQuestion = z.infer<typeof generatedQuestionSchema>;
 type JobRow = {
@@ -25,6 +26,7 @@ type JobRow = {
 type JobState = {
   blueprint: BattleBlueprintInput | null;
   mode_schedule: BattleBlueprintInput["modes"][number]["type"][];
+  difficulty_schedule: number[];
   generated_questions: GeneratedQuestion[];
 };
 
@@ -67,15 +69,6 @@ function fairTimeLimit(modes: BattleBlueprintInput["modes"]) {
   if (modes.some((item) => ["READING", "STORY_LISTENING", "SHADOWING"].includes(item.type))) return 60;
   if (modes.some((item) => ["LISTENING", "AUDIO_CHOICE", "PRONUNCIATION"].includes(item.type))) return 50;
   return 40;
-}
-
-function createModeSchedule(blueprint: BattleBlueprintInput) {
-  const remaining = blueprint.modes.map((mode) => ({ ...mode }));
-  const result: BattleBlueprintInput["modes"][number]["type"][] = [];
-  while (result.length < blueprint.rounds) {
-    for (const mode of remaining) if (mode.count > 0 && result.length < blueprint.rounds) { result.push(mode.type); mode.count -= 1; }
-  }
-  return result;
 }
 
 function answerKey(value: string) {
@@ -160,7 +153,7 @@ async function buildBlueprint(request: z.infer<typeof gameGenerationRequestSchem
   return parsed.data;
 }
 
-async function buildQuestionBatch(request: z.infer<typeof gameGenerationRequestSchema>, blueprint: BattleBlueprintInput, modes: string[], previous: GeneratedQuestion[], sourceContext: unknown[]) {
+async function buildQuestionBatch(request: z.infer<typeof gameGenerationRequestSchema>, blueprint: BattleBlueprintInput, modes: string[], targetDifficulties: number[], previous: GeneratedQuestion[], sourceContext: unknown[]) {
   const start = previous.length + 1;
   const prompt = [
     "Generate a compact batch of real English-learning questions. Return JSON only as {items:[...]}, with exactly the requested number of items.",
@@ -173,6 +166,8 @@ async function buildQuestionBatch(request: z.infer<typeof gameGenerationRequestS
     QUESTION_GENERATION_POLICY,
     `Topic: ${blueprint.topic}. CEFR: ${blueprint.level}. Difficulty: ${blueprint.difficulty}.`,
     `Rounds ${start}-${start + modes.length - 1}. Modes in exact order: ${modes.join(", ")}.`,
+    `Numeric difficulty targets in exact order: ${targetDifficulties.join(", ")}. Use 1 for easiest and 10 for hardest.`,
+    request.adaptiveContext?.analyticsParticipants ? `Privacy-safe aggregate learning evidence: ${JSON.stringify(request.adaptiveContext)}.` : "No learner analytics were available; do not infer private learning history.",
     `Learners requested: ${request.request}`,
     previous.length ? `Do not repeat these answers: ${JSON.stringify(previous.map((item) => item.canonicalAnswer))}` : "No previous questions.",
     sourceContext.length ? `Licensed source records are supplied as grounding context. Use only records that fit the requested topic and keep their facts unchanged: ${JSON.stringify(sourceContext)}` : "No approved imported source record matches this batch. Generate original educational items, never pretend they came from an external dataset."
@@ -185,7 +180,7 @@ async function buildQuestionBatch(request: z.infer<typeof gameGenerationRequestS
     const claimedSource = typeof item.privateData.sourceContentId === "string" ? item.privateData.sourceContentId : null;
     const privateData = { ...item.privateData, ...(claimedSource && sourceIds.has(claimedSource) ? { sourceContentId: claimedSource } : {}) };
     if (!claimedSource || !sourceIds.has(claimedSource)) delete privateData.sourceContentId;
-    return { ...item, privateData, mode: modes[index] as GeneratedQuestion["mode"], level: blueprint.level, timeLimit: blueprint.timePerQuestion };
+    return { ...item, privateData, mode: modes[index] as GeneratedQuestion["mode"], difficulty: targetDifficulties[index] ?? item.difficulty, level: blueprint.level, timeLimit: blueprint.timePerQuestion };
   });
   const parsed = z.array(generatedQuestionSchema).length(modes.length).safeParse(items);
   if (!parsed.success) throw new ProviderFailure("Question batch failed schema validation", "invalid_batch", 5);
@@ -215,7 +210,7 @@ async function releaseJob(admin: NonNullable<ReturnType<typeof createSupabaseAdm
   if (error) throw error;
 }
 
-async function persistCompletedMatch(admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>, job: JobRow, blueprint: BattleBlueprintInput, questions: GeneratedQuestion[]) {
+async function persistCompletedMatch(admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>, job: JobRow, blueprint: BattleBlueprintInput, questions: GeneratedQuestion[], request: z.infer<typeof gameGenerationRequestSchema>, modeSchedule: string[], difficultySchedule: number[]) {
   const { data: members, error: memberError } = await admin.from("room_members").select("user_id").eq("room_id", job.room_id);
   if (memberError || !members || members.length !== 2) throw new ProviderFailure("The room no longer has exactly two members", "room_members_changed", 0);
   const { data: match, error: matchError } = await admin.from("matches").insert({ room_id: job.room_id, title: blueprint.title, topic: blueprint.topic, level: blueprint.level, status: "ready", blueprint, round_count: blueprint.rounds, current_round: 0, scoring_version: "v3" }).select("id").single();
@@ -230,6 +225,15 @@ async function persistCompletedMatch(admin: NonNullable<ReturnType<typeof create
       return { question_id: stored.id, canonical_answer: generated.canonicalAnswer, accepted_answers: [...new Set([generated.canonicalAnswer, ...generated.acceptedAnswers])], grading_rules: { mode: generated.mode, strictness: blueprint.settings.strictness, rubric: generated.publicData.rubric ?? [], ...generated.privateData }, explanation: generated.explanation };
     }));
     if (answerError) throw answerError;
+    const { error: contextError } = await admin.from("match_adaptive_contexts").insert({
+      match_id: match.id,
+      policy: blueprint.settings.sequencingPolicy.toLocaleLowerCase(),
+      evidence_snapshot: request.adaptiveContext ?? {},
+      mode_schedule: modeSchedule,
+      difficulty_schedule: difficultySchedule,
+      algorithm_version: ARENA_ADAPTATION_VERSION
+    });
+    if (contextError) throw contextError;
     await admin.from("rooms").update({ status: "GAME_READY" }).eq("id", job.room_id);
     await admin.from("generation_jobs").update({ match_id: match.id }).eq("id", job.id);
     return match.id as string;
@@ -254,17 +258,24 @@ export async function processNextGenerationJob() {
   let activeBatchStart: number | null = null;
   try {
     const request = gameGenerationRequestSchema.parse(job.request_payload);
-    const { data: storedState } = await admin.from("generation_job_states").select("blueprint, mode_schedule, generated_questions").eq("job_id", job.id).maybeSingle();
+    const { data: storedState } = await admin.from("generation_job_states").select("blueprint, mode_schedule, difficulty_schedule, generated_questions").eq("job_id", job.id).maybeSingle();
     const state: JobState = {
       blueprint: storedState?.blueprint ? battleBlueprintSchema.parse(storedState.blueprint) : null,
       mode_schedule: Array.isArray(storedState?.mode_schedule) ? storedState.mode_schedule as JobState["mode_schedule"] : [],
+      difficulty_schedule: Array.isArray(storedState?.difficulty_schedule) ? storedState.difficulty_schedule.map(Number) : [],
       generated_questions: Array.isArray(storedState?.generated_questions) ? z.array(generatedQuestionSchema).parse(storedState.generated_questions) : []
     };
     if (!state.blueprint) {
       state.blueprint = await buildBlueprint(request);
-      state.mode_schedule = createModeSchedule(state.blueprint);
+      state.mode_schedule = buildAdaptiveModeSchedule(state.blueprint.modes, state.blueprint.settings.sequencingPolicy, request.adaptiveContext);
+      state.difficulty_schedule = buildDifficultySchedule(state.blueprint.rounds, state.blueprint.settings.adaptiveDifficulty ? state.blueprint.settings.difficultyCurve : "STEADY", request.adaptiveContext);
       await admin.from("generation_jobs").update({ total_rounds: state.blueprint.rounds, stage: `Đã thiết kế trận · đang tạo 0/${state.blueprint.rounds} câu`, updated_at: new Date().toISOString() }).eq("id", job.id);
-      await admin.from("generation_job_states").upsert({ job_id: job.id, blueprint: state.blueprint, mode_schedule: state.mode_schedule, generated_questions: [], updated_at: new Date().toISOString() });
+      await admin.from("generation_job_states").upsert({ job_id: job.id, blueprint: state.blueprint, mode_schedule: state.mode_schedule, difficulty_schedule: state.difficulty_schedule, generated_questions: [], updated_at: new Date().toISOString() });
+    }
+    if (!state.mode_schedule.length || state.mode_schedule.length !== state.blueprint.rounds || state.difficulty_schedule.length !== state.blueprint.rounds) {
+      state.mode_schedule = buildAdaptiveModeSchedule(state.blueprint.modes, state.blueprint.settings.sequencingPolicy, request.adaptiveContext);
+      state.difficulty_schedule = buildDifficultySchedule(state.blueprint.rounds, state.blueprint.settings.adaptiveDifficulty ? state.blueprint.settings.difficultyCurve : "STEADY", request.adaptiveContext);
+      await admin.from("generation_job_states").upsert({ job_id: job.id, blueprint: state.blueprint, mode_schedule: state.mode_schedule, difficulty_schedule: state.difficulty_schedule, generated_questions: state.generated_questions, updated_at: new Date().toISOString() });
     }
 
     const start = state.generated_questions.length;
@@ -273,8 +284,9 @@ export async function processNextGenerationJob() {
     if (start < state.blueprint.rounds) {
       activeBatchStart = start + 1;
       const modes = state.mode_schedule.slice(start, Math.min(start + job.batch_size, state.blueprint.rounds));
+      const difficulties = state.difficulty_schedule.slice(start, start + modes.length);
       const sourceContext = await loadSourceContext(admin, modes);
-      const batch = await buildQuestionBatch(request, state.blueprint, modes, state.generated_questions, sourceContext);
+      const batch = await buildQuestionBatch(request, state.blueprint, modes, difficulties, state.generated_questions, sourceContext);
       const sourceIds = new Set(sourceContext.flatMap((row) => row && typeof row === "object" && "id" in row && typeof row.id === "string" ? [row.id] : []));
       const quality = assessQuestionBatch(batch, state.generated_questions, sourceIds);
       await admin.from("question_quality_audits").upsert({
@@ -290,7 +302,7 @@ export async function processNextGenerationJob() {
       state.generated_questions.push(...batch);
       completed = state.generated_questions.length;
       nextRound = completed + 1;
-      await admin.from("generation_job_states").upsert({ job_id: job.id, blueprint: state.blueprint, mode_schedule: state.mode_schedule, generated_questions: state.generated_questions, updated_at: new Date().toISOString() });
+      await admin.from("generation_job_states").upsert({ job_id: job.id, blueprint: state.blueprint, mode_schedule: state.mode_schedule, difficulty_schedule: state.difficulty_schedule, generated_questions: state.generated_questions, updated_at: new Date().toISOString() });
     }
 
     if (state.generated_questions.length < state.blueprint.rounds) {
@@ -299,7 +311,7 @@ export async function processNextGenerationJob() {
     }
 
     await admin.from("generation_jobs").update({ status: "persisting", stage: "Đang lưu và kiểm tra trận đấu", updated_at: new Date().toISOString() }).eq("id", job.id).eq("lease_token", workerToken);
-    const matchId = await persistCompletedMatch(admin, job, state.blueprint, state.generated_questions);
+    const matchId = await persistCompletedMatch(admin, job, state.blueprint, state.generated_questions, request, state.mode_schedule, state.difficulty_schedule);
     await releaseJob(admin, job, { status: "completed", stage: "Trận đấu đã sẵn sàng", completed: state.blueprint.rounds, nextRound: state.blueprint.rounds + 1 });
     await recordTelemetry({ name: "generation.completed", correlationId: job.correlation_id, roomId: job.room_id, userId: job.requested_by, provider: "groq", metadata: { jobId: job.id, rounds: state.blueprint.rounds, batches: Math.ceil(state.blueprint.rounds / job.batch_size) } });
     return { processed: true, completed: true, jobId: job.id, matchId };
@@ -353,7 +365,7 @@ export async function generateQuestionEvaluationCandidate(input: unknown) {
     request: parsed.request,
     preferences: { level: ["A1","A2","B1","B2","C1","C2","Mixed"].includes(parsed.level) ? parsed.level : "Mixed" }
   });
-  const questions = await buildQuestionBatch(request, blueprint, parsed.modes, [], []);
+  const questions = await buildQuestionBatch(request, blueprint, parsed.modes, buildDifficultySchedule(parsed.modes.length, "STEADY"), [], []);
   return {
     promptVersion: QUESTION_PROMPT_VERSION,
     policyVersion: QUESTION_QUALITY_POLICY_VERSION,

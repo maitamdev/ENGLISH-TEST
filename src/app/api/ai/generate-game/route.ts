@@ -4,9 +4,38 @@ import { recordTelemetry } from "@/lib/observability/telemetry";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { gameGenerationRequestSchema } from "@/lib/validation/game";
+import type { ArenaAdaptiveContext } from "@/types/game";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
+
+async function buildAdaptiveContext(admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>, userIds: string[]): Promise<ArenaAdaptiveContext> {
+  const { data: privacy } = await admin.from("privacy_preferences").select("user_id, allow_learning_analytics").in("user_id", userIds);
+  const optedOut = new Set((privacy ?? []).filter((item) => item.allow_learning_analytics === false).map((item) => item.user_id));
+  const participants = userIds.filter((id) => !optedOut.has(id));
+  if (!participants.length) return { skillMastery: {}, reviewDueBySkill: {}, evidenceCount: 0, analyticsParticipants: 0 };
+  const { data: mastery, error } = await admin.from("learner_skill_mastery").select("skill, mastery_score, evidence_count").in("user_id", participants);
+  if (error) throw error;
+  const skillTotals = new Map<string, { score: number; count: number }>();
+  for (const row of mastery ?? []) {
+    const current = skillTotals.get(row.skill) ?? { score: 0, count: 0 };
+    current.score += Number(row.mastery_score); current.count += 1; skillTotals.set(row.skill, current);
+  }
+  const reviewDueBySkill: Record<string, number> = {};
+  const now = new Date().toISOString();
+  for (let from = 0; ; from += 500) {
+    const { data, error: reviewError } = await admin.from("review_cards").select("skill").in("user_id", participants).is("suspended_at", null).lte("due_at", now).range(from, from + 499);
+    if (reviewError) throw reviewError;
+    for (const row of data ?? []) reviewDueBySkill[row.skill] = (reviewDueBySkill[row.skill] ?? 0) + 1;
+    if (!data || data.length < 500) break;
+  }
+  return {
+    skillMastery: Object.fromEntries([...skillTotals].map(([skill, value]) => [skill, Math.round(value.score / value.count * 100) / 100])),
+    reviewDueBySkill,
+    evidenceCount: (mastery ?? []).reduce((sum, row) => sum + Number(row.evidence_count), 0),
+    analyticsParticipants: participants.length
+  };
+}
 
 export async function POST(request: Request) {
   const parsed = gameGenerationRequestSchema.safeParse(await request.json().catch(() => null));
@@ -26,6 +55,7 @@ export async function POST(request: Request) {
   if (!room) return NextResponse.json({ error: "Không tìm thấy phòng" }, { status: 404 });
   if (!membership) return NextResponse.json({ error: "Chỉ thành viên phòng mới có thể tạo trận" }, { status: 403 });
   if (!members || members.length !== 2) return NextResponse.json({ error: "Phòng phải có đúng hai thành viên" }, { status: 409 });
+  const adaptiveContext = await buildAdaptiveContext(admin, members.map((member) => member.user_id));
 
   const { data: claimed, error: claimError } = await admin.from("rooms").update({ status: "GENERATING_GAME" }).eq("id", room.id).eq("status", "AI_DISCUSSION").select("id").maybeSingle();
   if (claimError) return NextResponse.json({ error: claimError.message }, { status: 500 });
@@ -33,7 +63,7 @@ export async function POST(request: Request) {
 
   const { data: job, error: jobError } = await admin.from("generation_jobs").insert({
     room_id: room.id, requested_by: authData.user.id, status: "queued",
-    stage: "Đã xếp hàng · đang chờ thiết kế trận đấu", request_payload: parsed.data,
+    stage: "Đã xếp hàng · đang chờ thiết kế trận đấu", request_payload: { ...parsed.data, adaptiveContext },
     batch_size: 4, next_round: 1, max_attempts: 8
   }).select("id, correlation_id").single();
   if (jobError || !job) {
