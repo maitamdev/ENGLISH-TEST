@@ -22,12 +22,13 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
   if (!roomResult.data) return null;
   const room = roomResult.data;
 
-  const [membersResult, matchResult, generationResult] = await Promise.all([
+  const [membersResult, matchResult, generationResult, aiSessionResult] = await Promise.all([
     supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
     supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("generation_jobs").select("status, stage, total_rounds, completed_rounds, error_message").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    supabase.from("generation_jobs").select("status, stage, total_rounds, completed_rounds, error_message, updated_at").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("ai_sessions").select("id, coordinator_id, heartbeat_at").eq("room_id", room.id).is("ended_at", null).order("started_at", { ascending: false }).limit(1).maybeSingle()
   ]);
-  if (membersResult.error || matchResult.error || generationResult.error) throw membersResult.error ?? matchResult.error ?? generationResult.error;
+  if (membersResult.error || matchResult.error || generationResult.error || aiSessionResult.error) throw membersResult.error ?? matchResult.error ?? generationResult.error ?? aiSessionResult.error;
 
   let match: MatchView | null = null;
   let playerRows: PlayerRow[] = [];
@@ -83,7 +84,13 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
       stage: generationResult.data.stage,
       totalRounds: generationResult.data.total_rounds,
       completedRounds: generationResult.data.completed_rounds,
-      errorMessage: generationResult.data.error_message
+      errorMessage: generationResult.data.error_message,
+      updatedAt: generationResult.data.updated_at
+    } : null,
+    aiSession: aiSessionResult.data ? {
+      id: aiSessionResult.data.id,
+      coordinatorId: aiSessionResult.data.coordinator_id,
+      heartbeatAt: aiSessionResult.data.heartbeat_at
     } : null
   } as RoomBootstrap;
 }

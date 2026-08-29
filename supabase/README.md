@@ -10,6 +10,7 @@ Chạy trong SQL Editor theo đúng thứ tự:
 2. `migrations/20260827_game_engine_v2.sql`
 3. `migrations/20260827_multiskill_arena.sql`
 4. `migrations/20260827_production_hardening.sql`
+5. `migrations/20260829_ai_coordination.sql`
 
 Mỗi file migration được viết theo hướng chạy nâng cấp an toàn bằng `if exists` hoặc `if not exists` ở các phần có thể lặp lại. Không đổi thứ tự vì migration multi-skill sử dụng hàm normalize và broadcast được tạo trong game engine v2.
 
@@ -32,5 +33,7 @@ Chỉ chạy các migration chưa có trong project, vẫn theo thứ tự tên 
 `GEMINI_LIVE_MODEL` phụ trách hội thoại thời gian thực. `GEMINI_GRADING_MODEL` nghe và chấm rubric của bài nói. `GEMINI_TTS_MODEL` đọc nội dung thi nghe chính xác. Tách ba model giúp đổi chất lượng hoặc chi phí từng tác vụ mà không ảnh hưởng phần còn lại.
 
 Migration production hardening thêm tiến độ tạo trận realtime và chuyển transcript câu nghe cũ khỏi payload công khai sang `question_answers.grading_rules`. Vì vậy phải chạy migration này trước khi deploy code mới.
+
+Migration AI coordination đảm bảo mỗi phòng chỉ có một máy điều phối Gemini Live, thêm heartbeat/lease và broadcast trạng thái phiên AI. Migration này cũng phải chạy trước khi deploy phiên bản mới nhất.
 
 Sau khi chạy SQL, reload schema cache của Supabase nếu dashboard chưa nhận các cột kỹ năng mới. Không cần import dữ liệu mẫu.

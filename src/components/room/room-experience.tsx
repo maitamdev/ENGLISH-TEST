@@ -58,7 +58,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const [audioOpen, setAudioOpen] = useState(false);
   const [micEnabled, setMicEnabled] = useState(false);
   const [voiceConnected, setVoiceConnected] = useState(false);
-  const [remoteAiActive, setRemoteAiActive] = useState(false);
+  const [remoteAiActive, setRemoteAiActive] = useState(() => Boolean(initial.aiSession && initial.aiSession.coordinatorId !== initial.currentUserId));
   const channelRef = useRef<RealtimeChannel | null>(null);
   const geminiDataChannelRef = useRef<RTCDataChannel | null>(null);
 
@@ -101,6 +101,13 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
 
   useEffect(() => { onlineRef.current = onlineIds; }, [onlineIds]);
   useEffect(() => { membersRef.current = room.members; }, [room.members]);
+  useEffect(() => {
+    const remoteLease = room.aiSession?.coordinatorId !== room.currentUserId ? room.aiSession : null;
+    const remaining = remoteLease ? Math.max(0, 75_000 - (Date.now() - new Date(remoteLease.heartbeatAt).getTime())) : 0;
+    const synchronize = window.setTimeout(() => setRemoteAiActive(Boolean(remoteLease) && remaining > 0), 0);
+    const expiry = remoteLease && remaining > 0 ? window.setTimeout(() => setRemoteAiActive(false), remaining) : undefined;
+    return () => { window.clearTimeout(synchronize); if (expiry) window.clearTimeout(expiry); };
+  }, [room.aiSession, room.currentUserId]);
   useEffect(() => {
     const active = ["connecting", "listening", "speaking"].includes(gemini.status);
     if (localAiActiveRef.current === active) return;
@@ -593,7 +600,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       </form>
     </RoomGrid>;
 
-    if (phase === "generating") return <Loading title="Đang tạo nội dung trận đấu" detail="Groq đang tạo từng nhóm nhỏ và kiểm tra chất lượng trước khi lưu. Cả hai cứ ở trong phòng; hệ thống sẽ tự chuyển màn hình khi hoàn tất." progress={room.generation} />;
+    if (phase === "generating") return <Loading title="Đang tạo nội dung trận đấu" detail="Groq đang tạo từng nhóm nhỏ và kiểm tra chất lượng trước khi lưu. Cả hai cứ ở trong phòng; hệ thống sẽ tự chuyển màn hình khi hoàn tất." progress={room.generation} onRecover={() => run(async () => { await api("/api/ai/generation-recover", { method: "POST", body: JSON.stringify({ roomId: room.roomId }) }); toast.success("Đã khôi phục phòng. Bạn có thể tạo lại trận."); })} />;
     if (phase === "config") {
       if (!room.match) return <Loading title="No generated match yet" detail="Waiting for match data from Supabase." />;
       const plan = room.match.blueprint;
@@ -619,9 +626,16 @@ function Player({ member, online }: { member?: RoomMemberData; online: boolean }
   return <article className="surface player-panel"><Avatar name={member.displayName} src={member.avatarUrl ?? undefined} size={104} /><h2>{member.displayName}</h2><p>{online ? "Online" : "Offline"}</p><Waveform active={false} bars={11} />{member.score > 0 && <span className="player-score-small">{member.score}</span>}</article>;
 }
 
-function Loading({ title, detail, progress }: { title: string; detail: string; progress?: RoomBootstrap["generation"] }) {
+function Loading({ title, detail, progress, onRecover }: { title: string; detail: string; progress?: RoomBootstrap["generation"]; onRecover?: () => void }) {
+  const [recoverable, setRecoverable] = useState(false);
+  useEffect(() => {
+    if (!progress?.updatedAt || !onRecover || !["queued", "generating", "persisting"].includes(progress.status)) return;
+    const remaining = Math.max(0, 330_000 - (Date.now() - new Date(progress.updatedAt).getTime()));
+    const timer = window.setTimeout(() => setRecoverable(true), remaining);
+    return () => window.clearTimeout(timer);
+  }, [onRecover, progress]);
   const percentage = progress?.totalRounds ? Math.min(100, Math.round((progress.completedRounds / progress.totalRounds) * 100)) : null;
-  return <section className="surface center-stage"><div className="ai-avatar"><Image src="/images/lexi-host.png" alt="Lexi AI host" fill sizes="126px" /></div><h1>{title}</h1><p>{detail}</p>{progress && <div className="generation-progress"><div><strong>{progress.stage}</strong><span>{progress.totalRounds ? `${progress.completedRounds}/${progress.totalRounds} câu` : "Đang chuẩn bị"}</span></div><div className="generation-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage ?? undefined}><span style={{ width: `${percentage ?? 8}%` }} /></div></div>}<LoaderCircle size={24} className="animate-spin text-accent" /></section>;
+  return <section className="surface center-stage"><div className="ai-avatar"><Image src="/images/lexi-host.png" alt="Lexi AI host" fill sizes="126px" /></div><h1>{title}</h1><p>{detail}</p>{progress && <div className="generation-progress"><div><strong>{progress.stage}</strong><span>{progress.totalRounds ? `${progress.completedRounds}/${progress.totalRounds} câu` : "Đang chuẩn bị"}</span></div><div className="generation-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage ?? undefined}><span style={{ width: `${percentage ?? 8}%` }} /></div></div>}{recoverable && onRecover ? <div className="generation-recovery"><p>Tiến trình không cập nhật quá 5 phút và có thể đã bị Vercel ngắt.</p><button type="button" className="button button-secondary" onClick={onRecover}><RotateCcw size={16} /> Khôi phục phòng</button></div> : <LoaderCircle size={24} className="animate-spin text-accent" />}</section>;
 }
 
 function Scorebar({ members, title, round, rounds, seconds }: { members: RoomMemberData[]; title: string; round: number; rounds: number; seconds: number }) {

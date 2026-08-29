@@ -16,12 +16,95 @@ import {
 type GroqCompletion = { choices?: { message?: { content?: string } }[] };
 type GeneratedQuestion = z.infer<typeof generatedQuestionSchema>;
 type QuestionMode = BattleBlueprintInput["modes"][number]["type"];
+type GroqSchema = { name: string; schema: Record<string, unknown> };
 
 export const maxDuration = 300;
 
 const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-async function requestGroqJson(apiKey: string, model: string, prompt: string, maxCompletionTokens: number) {
+const groqModeValues = [
+  "VI_TO_EN", "EN_TO_VI", "LISTENING", "SPELLING", "MULTIPLE_CHOICE", "READING", "CONTEXT", "GRAMMAR",
+  "TRANSLATION", "DEFINITION", "PRONUNCIATION", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING", "BOSS"
+] as const;
+
+const blueprintDraftSchema = z.object({
+  title: z.string().min(3).max(80),
+  topic: z.string().min(2).max(60),
+  level: z.string().min(1).max(20),
+  rounds: z.number().int().min(5).max(50),
+  timePerQuestion: z.number().int().min(5).max(120),
+  difficulty: z.enum(["Easy", "Medium", "Hard"]),
+  modes: z.array(z.object({ type: z.enum(groqModeValues), count: z.number().int().positive() })).min(1),
+  speedScoring: z.boolean(),
+  streakBonus: z.boolean()
+});
+
+const blueprintOutputSchema: GroqSchema = {
+  name: "match_blueprint",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      blueprint: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" }, topic: { type: "string" }, level: { type: "string" },
+          rounds: { type: "integer", minimum: 5, maximum: 50 },
+          timePerQuestion: { type: "integer", minimum: 5, maximum: 120 },
+          difficulty: { type: "string", enum: ["Easy", "Medium", "Hard"] },
+          modes: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: { type: { type: "string", enum: groqModeValues }, count: { type: "integer", minimum: 1 } },
+              required: ["type", "count"]
+            }
+          },
+          speedScoring: { type: "boolean" }, streakBonus: { type: "boolean" }
+        },
+        required: ["title", "topic", "level", "rounds", "timePerQuestion", "difficulty", "modes", "speedScoring", "streakBonus"]
+      }
+    },
+    required: ["blueprint"]
+  }
+};
+
+function questionBatchOutputSchema(count: number): GroqSchema {
+  const nullableString = { type: ["string", "null"] };
+  return {
+    name: "question_batch",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        items: {
+          type: "array",
+          minItems: count,
+          maxItems: count,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              prompt: { type: "string" }, answer: { type: "string" }, accepted: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" } },
+              instruction: nullableString, explanation: nullableString,
+              options: { type: "array", maxItems: 5, items: { type: "string" } },
+              passage: nullableString, audioText: nullableString, targetText: nullableString,
+              scenario: nullableString, role: nullableString, writingRequirements: nullableString,
+              rubric: { type: "array", maxItems: 5, items: { type: "string" } }
+            },
+            required: ["prompt", "answer", "accepted", "instruction", "explanation", "options", "passage", "audioText", "targetText", "scenario", "role", "writingRequirements", "rubric"]
+          }
+        }
+      },
+      required: ["items"]
+    }
+  };
+}
+
+async function requestGroqJson(apiKey: string, model: string, prompt: string, maxCompletionTokens: number, outputSchema?: GroqSchema) {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     let response: Response;
     try {
@@ -33,7 +116,9 @@ async function requestGroqJson(apiKey: string, model: string, prompt: string, ma
           temperature: 0.7,
           max_completion_tokens: maxCompletionTokens,
           ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
-          response_format: { type: "json_object" },
+          response_format: outputSchema && model.startsWith("openai/gpt-oss")
+            ? { type: "json_schema", json_schema: { ...outputSchema, strict: true } }
+            : { type: "json_object" },
           messages: [{ role: "system", content: prompt }]
         })
       });
@@ -243,6 +328,12 @@ export async function POST(request: Request) {
   const updateGenerationJob = async (values: Record<string, unknown>) => {
     await admin.from("generation_jobs").update({ ...values, updated_at: new Date().toISOString() }).eq("id", generationJob.id);
   };
+  const ensureGenerationActive = async () => {
+    const { data: currentJob } = await admin.from("generation_jobs").select("status").eq("id", generationJob.id).maybeSingle();
+    if (!currentJob || !["queued", "generating", "persisting"].includes(currentJob.status)) {
+      throw new Error("Generation job was cancelled or recovered by a room member");
+    }
+  };
   const explicitRounds = requestedRoundCount(parsed.data.request);
   const preferences = parsed.data.preferences;
   const detectedPresetId = presetFromBrief(parsed.data.request);
@@ -264,8 +355,8 @@ export async function POST(request: Request) {
 
   let pack: z.infer<typeof generatedGamePackSchema>;
   try {
-    const blueprintJson = await requestGroqJson(apiKey, model, blueprintPrompt, 650);
-    const blueprintEnvelope = z.object({ blueprint: battleBlueprintSchema }).safeParse(blueprintJson);
+    const blueprintJson = await requestGroqJson(apiKey, model, blueprintPrompt, 650, blueprintOutputSchema);
+    const blueprintEnvelope = z.object({ blueprint: blueprintDraftSchema }).safeParse(blueprintJson);
     if (!blueprintEnvelope.success) throw new Error("Groq returned an invalid match blueprint");
     const initialBlueprint = blueprintEnvelope.data.blueprint;
     const targetRounds = explicitRounds ?? preferences?.rounds ?? initialBlueprint.rounds;
@@ -289,6 +380,7 @@ export async function POST(request: Request) {
     const batchSize = 6;
 
     for (let start = 0; start < blueprint.rounds; start += batchSize) {
+      await ensureGenerationActive();
       if (start > 0) {
         await updateGenerationJob({ stage: `Đã tạo ${questions.length}/${blueprint.rounds} câu · đang điều tiết giới hạn AI` });
         await wait(18_000);
@@ -303,7 +395,7 @@ export async function POST(request: Request) {
         if (attempt > 1) await wait(2200);
         const batchPrompt = [
           "Generate one compact batch of high-quality questions for a two-player English learning competition.",
-          "Return exactly one JSON object and no markdown: {\"items\":[{\"prompt\":string,\"answer\":string,\"accepted\":[string],\"instruction\"?:string,\"explanation\"?:string,\"options\"?:string[],\"passage\"?:string,\"audioText\"?:string,\"targetText\"?:string,\"scenario\"?:string,\"role\"?:string,\"writingRequirements\"?:string,\"rubric\"?:string[]}]}.",
+          "Return exactly one JSON object and no markdown. Include every schema field for every item; use null for irrelevant nullable text fields and [] for irrelevant list fields.",
           "Mode rules: VI_TO_EN has Vietnamese prompt and English answer; EN_TO_VI is the reverse. MULTIPLE_CHOICE requires 4 plausible options including answer. READING requires a 60-180 word passage and preferably 4 options. LISTENING requires audioText plus a comprehension prompt. SPELLING requires audioText equal to the phrase to transcribe. PRONUNCIATION requires targetText. SPEAKING, ROLEPLAY and DEBATE require a concrete prompt, scenario or rubric and a short reference answer, but allow natural open responses. WRITING requires writingRequirements, rubric and a short reference answer, but accepts many valid responses.",
           "For speaking modes, never make speed the learning objective. For reading/listening, the question must be answerable from the supplied passage/audioText only.",
           "accepted must include common exact synonyms and legitimate spelling/number variants for this specific context; never include merely related words.",
@@ -319,7 +411,7 @@ export async function POST(request: Request) {
         ].filter(Boolean).join("\n");
         const complexCount = requiredModes.filter((mode) => ["READING", "LISTENING", "SPEAKING", "ROLEPLAY", "DEBATE"].includes(mode)).length;
         const batchTokenBudget = Math.max(800, Math.min(2300, requiredModes.length * 150 + complexCount * 180 + 300));
-        const batchJson = await requestGroqJson(apiKey, model, batchPrompt, batchTokenBudget);
+        const batchJson = await requestGroqJson(apiKey, model, batchPrompt, batchTokenBudget, questionBatchOutputSchema(requiredModes.length));
         const rawQuestions = isRecord(batchJson) && Array.isArray(batchJson.items) ? batchJson.items : [];
         const normalized = rawQuestions.map((question, index) => normalizeCompactItem(question, requiredModes[index] ?? fallbackMode, blueprint)).filter((question): question is GeneratedQuestion => question !== null);
         const normalizedResult = z.array(generatedQuestionSchema).length(requiredModes.length).safeParse(normalized);
@@ -352,6 +444,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: errorMessage }, { status: 502 });
   }
 
+  try {
+    await ensureGenerationActive();
+  } catch (error) {
+    await admin.from("rooms").update({ status: "AI_DISCUSSION" }).eq("id", room.id).eq("status", "GENERATING_GAME");
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Generation was cancelled" }, { status: 409 });
+  }
   await updateGenerationJob({ status: "persisting", stage: "Đang lưu và kiểm tra trận đấu" });
   const { data: match, error: matchError } = await admin.from("matches").insert({
     room_id: room.id, title: pack.blueprint.title, topic: pack.blueprint.topic,

@@ -92,6 +92,8 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
   const intentionalCloseRef = useRef(false);
   const handledToolCallsRef = useRef(new Set<string>());
   const resumptionHandleRef = useRef<string | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const heartbeatTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const restartRef = useRef<((stream: MediaStream, reconnect?: boolean) => Promise<void>) | null>(null);
   const onGenerateMatchRef = useRef(options.onGenerateMatch);
@@ -101,6 +103,50 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
   useEffect(() => { onGenerateMatchRef.current = options.onGenerateMatch; }, [options.onGenerateMatch]);
   useEffect(() => { onRequestHintRef.current = options.onRequestHint; }, [options.onRequestHint]);
   useEffect(() => { onAudioChunkRef.current = options.onAudioChunk; }, [options.onAudioChunk]);
+
+  const stopHeartbeat = useCallback(() => {
+    if (heartbeatTimerRef.current !== null) window.clearInterval(heartbeatTimerRef.current);
+    heartbeatTimerRef.current = null;
+  }, []);
+
+  const releaseLease = useCallback(() => {
+    stopHeartbeat();
+    const sessionId = sessionIdRef.current;
+    sessionIdRef.current = null;
+    if (!sessionId) return;
+    void fetch("/api/ai/gemini-session", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roomId, sessionId }),
+      keepalive: true
+    }).catch(() => undefined);
+  }, [roomId, stopHeartbeat]);
+
+  const startHeartbeat = useCallback(() => {
+    stopHeartbeat();
+    const heartbeat = async () => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      try {
+        const response = await fetch("/api/ai/gemini-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ roomId, sessionId }),
+          cache: "no-store"
+        });
+        if (response.status === 409) {
+          sessionIdRef.current = null;
+          stopHeartbeat();
+          intentionalCloseRef.current = true;
+          socketRef.current?.close(4001, "AI coordinator lease expired");
+          setError("Phiên Gemini đã chuyển sang máy khác. Bạn có thể bật lại AI.");
+          setStatus("error");
+        }
+      } catch { /* A later heartbeat retries; the server owns lease expiry. */ }
+    };
+    void heartbeat();
+    heartbeatTimerRef.current = window.setInterval(() => void heartbeat(), 20_000);
+  }, [roomId, stopHeartbeat]);
 
   const stopPlayback = useCallback(() => {
     playbackSourcesRef.current.forEach((source) => { try { source.stop(); } catch { /* already stopped */ } });
@@ -150,9 +196,10 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
       socket.close(1000, "AI stopped by host");
     } else socket?.close();
     socketRef.current = null;
+    releaseLease();
     releaseAudio();
     setStatus("off");
-  }, [releaseAudio]);
+  }, [releaseAudio, releaseLease]);
 
   const sendText = useCallback((text: string) => {
     const socket = socketRef.current;
@@ -195,6 +242,7 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
     if (!reconnect) {
       reconnectAttemptsRef.current = 0;
       resumptionHandleRef.current = null;
+      sessionIdRef.current = null;
       setInputTranscript("");
       setOutputTranscript("");
       handledToolCallsRef.current.clear();
@@ -208,10 +256,12 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
       const tokenResponse = await fetch("/api/ai/gemini-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomId })
+        body: JSON.stringify({ roomId, sessionId: sessionIdRef.current ?? undefined })
       });
-      const tokenBody = await tokenResponse.json() as { token?: string; model?: string; error?: string };
-      if (!tokenResponse.ok || !tokenBody.token || !tokenBody.model) throw new Error(tokenBody.error ?? "Could not start Gemini Live");
+      const tokenBody = await tokenResponse.json() as { token?: string; model?: string; sessionId?: string; error?: string };
+      if (!tokenResponse.ok || !tokenBody.token || !tokenBody.model || !tokenBody.sessionId) throw new Error(tokenBody.error ?? "Could not start Gemini Live");
+      sessionIdRef.current = tokenBody.sessionId;
+      const resumedConnection = reconnect;
 
       const endpoint = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(tokenBody.token)}`;
       const socket = new WebSocket(endpoint);
@@ -280,10 +330,13 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
         if (message.setupComplete) {
           reconnectAttemptsRef.current = 0;
           setStatus("listening");
-          socket.send(JSON.stringify({ realtimeInput: { text: sessionMode === "setup"
-            ? "Hãy chào hai bạn bằng tiếng Việt và hỏi: hôm nay hai bạn muốn học hay thi với nhau chủ đề gì? Chỉ hỏi ngắn gọn rồi chờ câu trả lời."
-            : "Hãy chào ngắn gọn bằng tiếng Việt rằng Lexi đã vào làm trợ giảng và sẵn sàng tương tác trong lúc hai bạn thi."
-          } }));
+          startHeartbeat();
+          if (!resumedConnection) {
+            socket.send(JSON.stringify({ realtimeInput: { text: sessionMode === "setup"
+              ? "Hãy chào hai bạn bằng tiếng Việt và hỏi: hôm nay hai bạn muốn học hay thi với nhau chủ đề gì? Chỉ hỏi ngắn gọn rồi chờ câu trả lời."
+              : "Hãy chào ngắn gọn bằng tiếng Việt rằng Lexi đã vào làm trợ giảng và sẵn sàng tương tác trong lúc hai bạn thi."
+            } }));
+          }
           void startCapture(stream, socket);
         }
         const functionCalls = message.toolCall?.functionCalls ?? [];
@@ -352,6 +405,7 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
             setStatus("connecting");
             window.setTimeout(() => void restartRef.current?.(stream, true), Math.min(5000, 500 * (2 ** (attempt - 1))));
           } else {
+            releaseLease();
             setError(event.reason || `Gemini Live closed (${event.code})`);
             setStatus("error");
           }
@@ -359,10 +413,19 @@ export function useGeminiLive(roomId: string, options: GeminiLiveOptions = {}) {
       };
     } catch (caught) {
       releaseAudio();
-      setError(caught instanceof Error ? caught.message : "Could not start Gemini Live");
-      setStatus("error");
+      const message = caught instanceof Error ? caught.message : "Could not start Gemini Live";
+      if (reconnect && stream.active && reconnectAttemptsRef.current < 5) {
+        const attempt = reconnectAttemptsRef.current + 1;
+        reconnectAttemptsRef.current = attempt;
+        setStatus("connecting");
+        window.setTimeout(() => void restartRef.current?.(stream, true), Math.min(5000, 500 * (2 ** (attempt - 1))));
+      } else {
+        releaseLease();
+        setError(message);
+        setStatus("error");
+      }
     }
-  }, [playAudio, releaseAudio, roomId, sessionContext, sessionMode, startCapture, status, stopPlayback]);
+  }, [playAudio, releaseAudio, releaseLease, roomId, sessionContext, sessionMode, startCapture, startHeartbeat, status, stopPlayback]);
 
   useEffect(() => { restartRef.current = start; }, [start]);
   useEffect(() => stop, [stop]);

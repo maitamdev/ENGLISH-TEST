@@ -119,6 +119,12 @@ export type RoomBootstrap = {
     totalRounds: number | null;
     completedRounds: number;
     errorMessage: string | null;
+    updatedAt: string;
+  } | null;
+  aiSession: {
+    id: string;
+    coordinatorId: string;
+    heartbeatAt: string;
   } | null;
 };
 
