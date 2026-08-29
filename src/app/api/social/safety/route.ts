@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { recordUserSecurityEvent } from "@/lib/security/audit";
 
 const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("block"), userId: z.string().uuid(), reason: z.string().trim().max(500).optional() }),
@@ -46,6 +47,7 @@ export async function POST(request: Request) {
       auth.admin.from("friendships").update({ status: "blocked", responded_at: now }).or(`and(requester_id.eq.${auth.user.id},addressee_id.eq.${parsed.data.userId}),and(requester_id.eq.${parsed.data.userId},addressee_id.eq.${auth.user.id})`),
       auth.admin.from("room_invites").update({ status: "cancelled", responded_at: now }).eq("status", "pending").or(`and(sender_id.eq.${auth.user.id},recipient_id.eq.${parsed.data.userId}),and(sender_id.eq.${parsed.data.userId},recipient_id.eq.${auth.user.id})`)
     ]);
+    await recordUserSecurityEvent({ userId: auth.user.id, eventType: "social.user.blocked", severity: "warning", outcome: "success", resourceType: "profile", resourceId: parsed.data.userId });
     return NextResponse.json({ blocked: true });
   }
 
@@ -55,6 +57,7 @@ export async function POST(request: Request) {
   }
   const { data, error } = await auth.admin.from("user_reports").insert({ reporter_id: auth.user.id, reported_user_id: parsed.data.userId, room_id: parsed.data.roomId ?? null, category: parsed.data.category, detail: parsed.data.detail, evidence: { submittedFrom: "community_safety" } }).select("id, status").single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  await recordUserSecurityEvent({ userId: auth.user.id, eventType: "social.user.reported", severity: "high", outcome: "success", resourceType: "user_report", resourceId: data.id, metadata: { category: parsed.data.category } });
   return NextResponse.json(data, { status: 201 });
 }
 
@@ -65,5 +68,6 @@ export async function DELETE(request: Request) {
   if (!userId || !z.string().uuid().safeParse(userId).success) return NextResponse.json({ error: "Valid userId required" }, { status: 400 });
   const { error } = await auth.admin.from("user_blocks").delete().eq("blocker_id", auth.user.id).eq("blocked_id", userId);
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  await recordUserSecurityEvent({ userId: auth.user.id, eventType: "social.user.unblocked", outcome: "success", resourceType: "profile", resourceId: userId });
   return NextResponse.json({ blocked: false });
 }

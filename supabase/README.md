@@ -18,6 +18,7 @@ Chạy trong SQL Editor theo đúng thứ tự:
 10. `migrations/20260831_adaptive_learning_paths.sql`
 11. `migrations/20260901_arena_orchestration.sql`
 12. `migrations/20260902_arena_insights.sql`
+13. `migrations/20260903_security_control_plane.sql`
 
 Mỗi file migration được viết theo hướng chạy nâng cấp an toàn bằng `if exists` hoặc `if not exists` ở các phần có thể lặp lại. Không đổi thứ tự vì migration multi-skill sử dụng hàm normalize và broadcast được tạo trong game engine v2.
 
@@ -55,10 +56,12 @@ Migration arena orchestration thêm preset do chính người dùng lưu, adapti
 
 Migration arena insights thêm RPC tổng hợp head-to-head từ match/submission/fairness/connectivity thật. RPC chỉ chạy cho friendship đã xác nhận, từ chối cặp tài khoản đã block nhau và chỉ trả remediation của chính người gọi; không tạo snapshot hoặc bảng xếp hạng mẫu.
 
+Migration security control plane thêm nhật ký bảo mật riêng của từng tài khoản, receipt chống phát lại cho mutation tốn tài nguyên và lease chống worker chạy chồng. Browser không được ghi audit/receipt/lease; các RPC đều chỉ cấp cho service role, dùng `security definer` với `search_path` rỗng và có retention tự dọn. Migration không chèn event hay dữ liệu mẫu.
+
 Không chạy importer Facebook nếu chưa có quyền quản trị Page và bằng chứng cho phép tái sử dụng nội dung. Không scrape profile, group, comment hoặc Page của bên thứ ba. Tatoeba, CMUdict và CoVoST được lưu license/attribution đến từng record.
 
 Có thể chạy `tests/production_contracts.sql` sau migration để kiểm tra các table/function và ranh giới quyền quan trọng. File test chỉ đọc catalog và không chèn dữ liệu.
 
-Sau migration cuối, chạy thêm `tests/production_verification_contracts.sql`, `tests/adaptive_learning_contracts.sql`, `tests/arena_orchestration_contracts.sql` và `tests/arena_insights_contracts.sql`. Toàn bộ contract test đều read-only; workflow `.github/workflows/database-contracts.yml` có thể chạy chúng trên database CI tách biệt qua secret `SUPABASE_DB_URL`.
+Sau migration cuối, chạy thêm `tests/production_verification_contracts.sql`, `tests/adaptive_learning_contracts.sql`, `tests/arena_orchestration_contracts.sql`, `tests/arena_insights_contracts.sql` và `tests/security_control_plane_contracts.sql`. Toàn bộ contract test đều read-only; workflow `.github/workflows/database-contracts.yml` có thể chạy chúng trên database CI tách biệt qua secret `SUPABASE_DB_URL`.
 
 Sau khi chạy SQL, reload schema cache của Supabase nếu dashboard chưa nhận các cột kỹ năng mới. Không cần import dữ liệu mẫu.

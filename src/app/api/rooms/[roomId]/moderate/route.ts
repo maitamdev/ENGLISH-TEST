@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { recordUserSecurityEvent } from "@/lib/security/audit";
 
 const schema = z.object({ userId: z.string().uuid(), action: z.enum(["mute","unmute","kick"]), reason: z.string().trim().max(500).optional() });
 
@@ -13,6 +14,10 @@ export async function POST(request: Request, context: { params: Promise<{ roomId
   const { data: authData } = await supabase.auth.getUser();
   if (!authData.user) return NextResponse.json({ error: "Bạn cần đăng nhập" }, { status: 401 });
   const { data, error } = await supabase.rpc("moderate_room_member", { target_room_id: roomId, target_user_id: parsed.data.userId, target_action: parsed.data.action, target_reason: parsed.data.reason ?? null });
-  if (error) return NextResponse.json({ error: error.message }, { status: 403 });
+  if (error) {
+    await recordUserSecurityEvent({ userId: authData.user.id, eventType: "room.moderation.denied", severity: "warning", outcome: "blocked", resourceType: "room", resourceId: roomId, metadata: { action: parsed.data.action } });
+    return NextResponse.json({ error: error.message }, { status: 403 });
+  }
+  await recordUserSecurityEvent({ userId: authData.user.id, eventType: "room.member.moderated", severity: parsed.data.action === "kick" ? "high" : "warning", outcome: "success", resourceType: "room", resourceId: roomId, metadata: { action: parsed.data.action } });
   return NextResponse.json(data, { headers: { "Cache-Control": "private, no-store" } });
 }

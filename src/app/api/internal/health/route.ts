@@ -1,19 +1,11 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { authorizeInternalRequest } from "@/lib/security/internal-auth";
 
 export const dynamic = "force-dynamic";
 
-function authorized(request: Request) {
-  const expected = process.env.HEALTHCHECK_SECRET || process.env.CRON_SECRET;
-  const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/iu, "") ?? "";
-  if (!expected || !supplied) return false;
-  const left = Buffer.from(expected); const right = Buffer.from(supplied);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
 export async function GET(request: Request) {
-  if (!authorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!authorizeInternalRequest(request, process.env.HEALTHCHECK_SECRET || process.env.CRON_SECRET)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const admin = createSupabaseAdminClient();
   if (!admin) return NextResponse.json({ status: "unconfigured" }, { status: 503 });
   const started = performance.now();

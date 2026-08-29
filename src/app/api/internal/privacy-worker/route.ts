@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { recordTelemetry } from "@/lib/observability/telemetry";
+import { authorizeInternalRequest } from "@/lib/security/internal-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
-
-function authorized(request: Request) {
-  const secret = process.env.CRON_SECRET;
-  return Boolean(secret && request.headers.get("authorization") === `Bearer ${secret}`);
-}
 
 async function exportUser(userId: string) {
   const admin = createSupabaseAdminClient();
@@ -64,7 +60,7 @@ async function work() {
 }
 
 export async function GET(request: Request) {
-  if (!authorized(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!authorizeInternalRequest(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   return NextResponse.json({ results: await work() });
 }
 export async function POST(request: Request) { return GET(request); }

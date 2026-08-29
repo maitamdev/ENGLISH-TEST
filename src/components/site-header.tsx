@@ -18,6 +18,7 @@ export function SiteHeader({ app = false, displayName }: { app?: boolean; displa
               <Link href="/paths">Paths</Link>
               <Link href="/speaking">Speaking</Link>
               <Link href="/community">Community</Link>
+              <Link href="/security">Security</Link>
               <Link href="/profile">Profile</Link>
             </>
           ) : (

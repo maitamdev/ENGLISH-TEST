@@ -1,6 +1,8 @@
 import { after, NextResponse } from "next/server";
 import { drainGenerationQueue } from "@/lib/ai/durable-game-generator";
 import { recordTelemetry } from "@/lib/observability/telemetry";
+import { recordUserSecurityEvent } from "@/lib/security/audit";
+import { claimMutation, completeMutation, requestPayloadHash } from "@/lib/security/mutation-receipt";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { gameGenerationRequestSchema } from "@/lib/validation/game";
@@ -40,6 +42,10 @@ async function buildAdaptiveContext(admin: NonNullable<ReturnType<typeof createS
 export async function POST(request: Request) {
   const parsed = gameGenerationRequestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Yêu cầu tạo trận không hợp lệ", details: parsed.error.flatten() }, { status: 400 });
+  const idempotencyKey = request.headers.get("idempotency-key") ?? "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(idempotencyKey)) {
+    return NextResponse.json({ error: "Thiếu Idempotency-Key hợp lệ", code: "IDEMPOTENCY_KEY_REQUIRED" }, { status: 400 });
+  }
   const supabase = await createSupabaseServerClient();
   const admin = createSupabaseAdminClient();
   if (!supabase || !admin) return NextResponse.json({ error: "Supabase chưa được cấu hình" }, { status: 503 });
@@ -53,13 +59,35 @@ export async function POST(request: Request) {
     admin.from("room_members").select("user_id").eq("room_id", parsed.data.roomId)
   ]);
   if (!room) return NextResponse.json({ error: "Không tìm thấy phòng" }, { status: 404 });
-  if (!membership) return NextResponse.json({ error: "Chỉ thành viên phòng mới có thể tạo trận" }, { status: 403 });
+  if (!membership) {
+    await recordUserSecurityEvent({ userId: authData.user.id, eventType: "room.generate.denied", severity: "warning", outcome: "blocked", resourceType: "room", resourceId: parsed.data.roomId });
+    return NextResponse.json({ error: "Chỉ thành viên phòng mới có thể tạo trận" }, { status: 403 });
+  }
   if (!members || members.length !== 2) return NextResponse.json({ error: "Phòng phải có đúng hai thành viên" }, { status: 409 });
-  const adaptiveContext = await buildAdaptiveContext(admin, members.map((member) => member.user_id));
+  const receipt = await claimMutation({ userId: authData.user.id, scope: "ai.generate-game", key: idempotencyKey, requestHash: requestPayloadHash(parsed.data) });
+  if (receipt.state === "conflict") return NextResponse.json({ error: "Idempotency-Key đã được dùng cho một yêu cầu khác", code: "IDEMPOTENCY_CONFLICT" }, { status: 409 });
+  if (receipt.state === "processing") return NextResponse.json({ error: "Yêu cầu này đang được xử lý", code: "REQUEST_IN_PROGRESS" }, { status: 409, headers: { "Retry-After": "2" } });
+  if (receipt.state === "replay") return NextResponse.json(receipt.responseBody, { status: receipt.responseStatus, headers: { "Idempotent-Replay": "true" } });
+  let adaptiveContext: ArenaAdaptiveContext;
+  try {
+    adaptiveContext = await buildAdaptiveContext(admin, members.map((member) => member.user_id));
+  } catch (error) {
+    const body = { error: error instanceof Error ? error.message : "Không đọc được dữ liệu thích ứng" };
+    await completeMutation({ userId: authData.user.id, scope: "ai.generate-game", key: idempotencyKey, status: 500, body, failed: true });
+    return NextResponse.json(body, { status: 500 });
+  }
 
   const { data: claimed, error: claimError } = await admin.from("rooms").update({ status: "GENERATING_GAME" }).eq("id", room.id).eq("status", "AI_DISCUSSION").select("id").maybeSingle();
-  if (claimError) return NextResponse.json({ error: claimError.message }, { status: 500 });
-  if (!claimed) return NextResponse.json({ error: `Không thể tạo trận khi phòng đang ở trạng thái ${room.status}` }, { status: 409 });
+  if (claimError) {
+    const body = { error: claimError.message };
+    await completeMutation({ userId: authData.user.id, scope: "ai.generate-game", key: idempotencyKey, status: 500, body, failed: true });
+    return NextResponse.json(body, { status: 500 });
+  }
+  if (!claimed) {
+    const body = { error: `Không thể tạo trận khi phòng đang ở trạng thái ${room.status}` };
+    await completeMutation({ userId: authData.user.id, scope: "ai.generate-game", key: idempotencyKey, status: 409, body, failed: true });
+    return NextResponse.json(body, { status: 409 });
+  }
 
   const { data: job, error: jobError } = await admin.from("generation_jobs").insert({
     room_id: room.id, requested_by: authData.user.id, status: "queued",
@@ -68,7 +96,9 @@ export async function POST(request: Request) {
   }).select("id, correlation_id").single();
   if (jobError || !job) {
     await admin.from("rooms").update({ status: "AI_DISCUSSION" }).eq("id", room.id).eq("status", "GENERATING_GAME");
-    return NextResponse.json({ error: jobError?.message ?? "Không tạo được tiến trình sinh câu hỏi" }, { status: 500 });
+    const body = { error: jobError?.message ?? "Không tạo được tiến trình sinh câu hỏi" };
+    await completeMutation({ userId: authData.user.id, scope: "ai.generate-game", key: idempotencyKey, status: 500, body, failed: true });
+    return NextResponse.json(body, { status: 500 });
   }
 
   await recordTelemetry({ name: "generation.queued", correlationId: job.correlation_id, roomId: room.id, userId: authData.user.id, provider: "groq", metadata: { jobId: job.id, batchSize: 4 } });
@@ -76,5 +106,8 @@ export async function POST(request: Request) {
     try { await drainGenerationQueue({ maxBatches: 2, timeBudgetMs: 90_000 }); }
     catch (cause) { await recordTelemetry({ name: "generation.after_failed", severity: "error", correlationId: job.correlation_id, roomId: room.id, userId: authData.user.id, errorCode: "after_worker", errorMessage: cause instanceof Error ? cause.message : "Background generation failed", metadata: { jobId: job.id } }); }
   });
-  return NextResponse.json({ jobId: job.id, queued: true, message: "Đã xếp hàng tạo trận theo từng batch" }, { status: 202, headers: { "Cache-Control": "private, no-store" } });
+  const responseBody = { jobId: job.id, queued: true, message: "Đã xếp hàng tạo trận theo từng batch" };
+  await completeMutation({ userId: authData.user.id, scope: "ai.generate-game", key: idempotencyKey, status: 202, body: responseBody });
+  await recordUserSecurityEvent({ userId: authData.user.id, eventType: "room.generate.queued", outcome: "success", resourceType: "room", resourceId: room.id, metadata: { jobId: job.id } });
+  return NextResponse.json(responseBody, { status: 202, headers: { "Cache-Control": "private, no-store" } });
 }

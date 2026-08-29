@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { recordUserSecurityEvent } from "@/lib/security/audit";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,7 @@ export async function PATCH(request: Request) {
     allow_authorized_content_contribution: parsed.data.allowAuthorizedContentContribution, updated_at: new Date().toISOString()
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  await recordUserSecurityEvent({ userId: authData.user.id, eventType: "privacy.preferences.updated", outcome: "success", resourceType: "privacy_preferences", metadata: { retainVoiceAssessments: parsed.data.retainVoiceAssessments, allowLearningAnalytics: parsed.data.allowLearningAnalytics, allowSocialDiscovery: parsed.data.allowSocialDiscovery, allowAuthorizedContentContribution: parsed.data.allowAuthorizedContentContribution } });
   return NextResponse.json({ saved: true });
 }
 
@@ -55,5 +57,6 @@ export async function POST(request: Request) {
   if (pending) return NextResponse.json({ error: "Bạn đã có một yêu cầu cùng loại đang xử lý" }, { status: 409 });
   const { data, error } = await admin.from("data_requests").insert({ user_id: authData.user.id, request_type: parsed.data.requestType, status: "queued" }).select("id, request_type, status, requested_at").single();
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  await recordUserSecurityEvent({ userId: authData.user.id, eventType: `privacy.${parsed.data.requestType}.requested`, severity: parsed.data.requestType === "delete" ? "high" : "info", outcome: "success", resourceType: "data_request", resourceId: data.id });
   return NextResponse.json(data, { status: 202 });
 }

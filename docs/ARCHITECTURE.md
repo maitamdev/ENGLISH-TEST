@@ -77,6 +77,11 @@ Rubric trận nói lưu intelligibility, segmental accuracy, word stress, rhythm
 - User có thể tắt analytics/discovery, tạo JSON export và queue xóa tài khoản có xác nhận.
 - Telemetry metadata bị giới hạn độ dài, không ghi answer/audio, và bỏ liên kết user/room/match khi analytics bị tắt.
 - Maintenance worker hết hạn invite/export, release TTS lease, đánh dấu connection stale và prune telemetry/operation theo retention.
+- Proxy từ chối mutation `/api/*` từ cross-site hoặc sibling same-site origin dựa trên Fetch Metadata và exact Origin/Referer; internal workers đi qua bearer secret constant-time riêng, không qua browser boundary.
+- API response mặc định `private, no-store` và có CSP/frame/object/referrer/permissions headers; microphone vẫn chỉ được phép trên chính origin để Gemini Live và WebRTC hoạt động.
+- Tạo trận yêu cầu UUID `Idempotency-Key`; receipt gắn user + scope + payload hash nên retry phát lại đúng response, còn reuse key với payload khác bị chặn.
+- `user_security_events` là audit append-only từ service role, user chỉ SELECT event của chính mình qua RLS. Không ghi token, cookie, email, IP, user-agent, transcript hoặc answer vào metadata; retention 180 ngày.
+- Maintenance dùng database lease có TTL để hai cron invocation không chạy chồng. Abuse/operational signals chỉ phục vụ quan sát và audit, không áp quota lên học, nói hoặc thi.
 
 ## Observability và kiểm thử
 

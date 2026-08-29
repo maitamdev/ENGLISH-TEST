@@ -1,8 +1,8 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { importLearningSource } from "@/lib/learning/source-importer";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { authorizeInternalRequest } from "@/lib/security/internal-auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -15,16 +15,8 @@ const requestSchema = z.object({
   authorizationEvidenceUrl: z.string().url().max(1000).optional()
 });
 
-function authorized(request: Request) {
-  const expected = process.env.CONTENT_IMPORT_SECRET;
-  const supplied = request.headers.get("authorization")?.replace(/^Bearer\s+/iu, "") ?? "";
-  if (!expected || !supplied) return false;
-  const left = Buffer.from(expected);
-  const right = Buffer.from(supplied);
-  return left.length === right.length && timingSafeEqual(left, right);
-}
 export async function POST(request: Request) {
-  if (!authorized(request)) return NextResponse.json({ error: "Import authorization failed" }, { status: 401 });
+  if (!authorizeInternalRequest(request, process.env.CONTENT_IMPORT_SECRET)) return NextResponse.json({ error: "Import authorization failed" }, { status: 401 });
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "Invalid import request", details: parsed.error.flatten() }, { status: 400 });
   const admin = createSupabaseAdminClient();

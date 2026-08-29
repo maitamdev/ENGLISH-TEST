@@ -764,7 +764,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     if (room.members.length !== 2) throw new Error("Bạn của bạn phải vào phòng trước khi Gemini tạo trận.");
     setBusy(true);
     try {
-      return await api("/api/ai/generate-game", { method: "POST", body: JSON.stringify({ roomId: room.roomId, request: brief, preferences }) }) as { jobId: string; queued: true; message: string };
+      return await api("/api/ai/generate-game", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ roomId: room.roomId, request: brief, preferences }) }) as { jobId: string; queued: true; message: string };
     } finally {
       setBusy(false);
     }
