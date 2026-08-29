@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/internal/generation-worker",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/privacy-worker",
+      "schedule": "17 * * * *"
+    },
+    {
+      "path": "/api/internal/maintenance-worker",
+      "schedule": "37 * * * *"
+    }
+  ]
+}

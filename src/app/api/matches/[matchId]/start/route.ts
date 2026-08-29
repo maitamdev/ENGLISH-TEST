@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export async function POST(_request: Request, { params }: RouteContext<"/api/matches/[matchId]/start">) {
+export async function POST(request: Request, { params }: RouteContext<"/api/matches/[matchId]/start">) {
   const { matchId } = await params;
+  const idempotencyKey = z.string().uuid().safeParse(request.headers.get("idempotency-key"));
+  if (!idempotencyKey.success) return NextResponse.json({ error: "A valid idempotency key is required" }, { status: 400 });
   const supabase = await createSupabaseServerClient();
   const admin = createSupabaseAdminClient();
   if (!supabase || !admin) return NextResponse.json({ error: "Supabase is not configured" }, { status: 503 });
@@ -18,10 +21,14 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
   if (!members || members.length !== 2) return NextResponse.json({ error: "Exactly two room members are required" }, { status: 409 });
   if (members.some((member) => !member.is_ready)) return NextResponse.json({ error: "Both players must be ready before the match starts" }, { status: 409 });
   
-  const { error } = await admin.rpc("start_match", { target_match_id: matchId });
+  const { data: schedule, error } = await supabase.rpc("schedule_match_round", {
+    target_match_id: matchId,
+    target_round: 1,
+    target_idempotency_key: idempotencyKey.data,
+    lead_time_ms: 3000
+  });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   const { error: resetError } = await admin.from("room_members").update({ is_ready: false }).eq("room_id", match.room_id);
   if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
-  await admin.from("rooms").update({ status: "ROUND_ACTIVE" }).eq("id", match.room_id);
-  return NextResponse.json({ matchId, currentRound: 1 });
+  return NextResponse.json({ matchId, currentRound: 1, schedule });
 }

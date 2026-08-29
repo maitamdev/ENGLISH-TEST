@@ -1,46 +1,85 @@
-# LexiDuel architecture
+# LexiDuel production architecture
 
-## Source of truth
+## Nguồn sự thật
 
-All shared state lives in Supabase PostgreSQL: profiles, rooms, membership, match blueprints, public questions, secret accepted answers, submissions, scores, winners, learning statistics, and review vocabulary. The UI contains no alternative dataset and does not fabricate data when Supabase or Groq is unavailable.
+PostgreSQL/Supabase là nguồn sự thật duy nhất của profile, phòng, membership, lease host, trạng thái trận, deadline, câu hỏi, đáp án bí mật, submission, điểm, rating, review card, lỗi học, speaking session và privacy request. React chỉ giữ draft, trạng thái thiết bị và snapshot server mới nhất. Zustand chỉ giữ mute/deafen cục bộ.
 
-Zustand stores only mute/deafen controls. React state stores form values, countdown presentation, device handles, and the latest server snapshot.
+Không có data fallback. Khi Supabase, Groq hoặc Gemini thiếu cấu hình, route trả lỗi rõ ràng và không tạo dữ liệu giả.
 
-## Runtime responsibilities
+## Luồng phòng và realtime
 
-- Supabase Auth supplies a real user ID. Anonymous Auth supports frictionless guest sessions; Google OAuth is optional.
-- Supabase Realtime Presence reports which room members are online.
-- Supabase private Broadcast events carry WebRTC offers, answers, and ICE candidates.
-- WebRTC carries player audio directly, using STUN and optional TURN.
-- Groq generates the complete match blueprint and question pack from the host's free-form request.
-- Gemini Live receives host microphone PCM only during an explicitly started AI session. The server exchanges its permanent key for a one-use ephemeral token; the browser connects with that token over the constrained Live WebSocket endpoint.
-- Next.js route handlers authorize hosts, validate AI JSON with Zod, persist generated games, advance rounds, reveal completed rounds, and finalize learning history.
-- PostgreSQL RPC `submit_answer` normalizes and grades answers, calculates speed/streak points, and writes the score atomically.
+```text
+ROOM_IDLE -> AI_DISCUSSION -> GENERATING_GAME -> GAME_READY
+          -> COUNTDOWN -> ROUND_ACTIVE -> ROUND_RESULT
+          -> ROUND_ACTIVE ... -> MATCH_RESULT
+```
 
-## Security boundaries
+- Mỗi browser có `clientSessionId` riêng và heartbeat 5 giây.
+- Host giữ lease 20 giây. Khi host mất heartbeat, thành viên còn online được bầu host, `host_epoch` và `state_version` tăng.
+- Presence chỉ báo online nhanh. Liveness/host authority nằm trong database.
+- Realtime Postgres changes và private Broadcast chỉ làm tín hiệu refresh. Snapshot server vẫn quyết định UI.
+- Voice signaling đi qua private Broadcast; audio người với người đi trực tiếp WebRTC. TURN credential được phát từ route authenticated.
 
-- `SUPABASE_SECRET_KEY`, `GROQ_API_KEY`, and `GEMINI_API_KEY` are server-only.
-- Browser code receives only the Supabase project URL and publishable key.
-- RLS restricts every application table to the current user or current room membership.
-- `question_answers` has RLS enabled and no client select grant or policy.
-- The browser submits only `questionId` and `answer`; time, correctness, and score are computed by PostgreSQL.
-- The round-resolution route proves room membership and checks the shared room state before reading the protected answer with the server key.
-- Private Realtime authorization accepts only `room:{code}` topics for current room members.
+## Đồng hồ và điểm
 
-## Room state machine
+`schedule_match_round` khóa match, kiểm tra active host, đặt `round_started_at` và `round_deadline_at` trong cùng transaction, rồi tăng `round_epoch`. Client đo offset bằng nhiều mẫu `/api/clock`, chọn mẫu RTT thấp nhất và hiển thị countdown theo deadline server. Máy nhận Realtime chậm không được thêm hoặc mất thời gian.
 
-`ROOM_IDLE → AI_DISCUSSION → GENERATING_GAME → GAME_READY → COUNTDOWN → ROUND_ACTIVE → ROUND_RESULT → MATCH_RESULT`
+`submit_answer` chạy trong PostgreSQL:
 
-The host is the only browser allowed to request shared state transitions. Both browsers receive changes through Supabase Realtime and refresh their server snapshot.
+1. Khóa match và xác minh round đang active.
+2. Chuẩn hóa Unicode/whitespace/punctuation và so exact hoặc typo nhỏ.
+3. Kiểm tra deadline server với transport grace 750 ms.
+4. Score Engine V3 tính base, accuracy factor, mode factor, difficulty, speed sau grace 20%, streak và hint deduction.
+5. Ghi submission và cập nhật match player atomically.
 
-## Match completion
+Đáp án text bị chấm sai chuỗi có một lượt semantic review tự động bảo thủ. Chỉ confidence từ 0.86 và nghĩa tương đương chính xác mới đảo verdict/điểm. Mọi lần đảo điểm có `answer_appeals`, model, confidence, score delta và explanation. Người học vẫn có thể gửi appeal thủ công.
 
-When the final round is advanced, the server:
+## AI và queue
 
-1. Reads real player scores and assigns a winner or draw.
-2. Aggregates each player's submissions by skill mode.
-3. Updates daily practice streak and skill percentages.
-4. Upserts vocabulary encounters and schedules review dates.
-5. Marks the match completed and moves the room to `MATCH_RESULT`.
+- Gemini Live dùng ephemeral token, giọng Kore, tiếng Việt là ngôn ngữ điều phối mặc định và tool call bắt buộc cho tạo trận/gợi ý.
+- `ai_sessions` bảo đảm một coordinator trong phòng; heartbeat giữ lease và WebSocket có session resumption/backoff.
+- Route tạo trận chỉ ghi `generation_jobs`. Worker claim bằng `FOR UPDATE SKIP LOCKED`, lease token và checkpoint `generation_job_states`.
+- Mỗi Groq call sinh tối đa 4 câu. Thành công checkpoint ngay; 429/invalid batch retry từ câu kế tiếp, không làm lại câu đã lưu.
+- Khi đủ câu, worker ghi match, players, public questions và secret answers rồi mới chuyển room sang `GAME_READY`.
+- TTS dùng content hash, private Storage, lease chống thundering herd và cache dùng chung giữa hai người.
 
-No seed or example rows are required. A new Supabase project remains empty until users create data through the application.
+## Learning intelligence
+
+- Trigger submission tạo `review_cards` và `learning_errors` từ bài làm thật, trừ khi user tắt learning analytics.
+- `ts-fsrs` tính lịch FSRS-6 ở server; `record_fsrs_review` idempotent bằng request UUID.
+- Study Plan dùng CEFR, stats, unresolved errors, review logs và match history thật; evidence snapshot được lưu cùng plan.
+- Completion của plan item là user action có RLS.
+- Match completion cập nhật learning history một lần bằng ledger và Elo skill rating một lần bằng transaction/idempotent event.
+- Match Review hiển thị cả hai submission, accepted answers, explanation, rubric và attribution nguồn mở trực tiếp.
+
+## Speaking và pronunciation
+
+Speaking Lab gửi blob audio tạm thời thẳng đến Gemini. Server không upload blob micro. Gemini trả transcript, assessment và câu đáp. RPC ghi learner turn + AI turn + session state trong một transaction idempotent. Câu AI được đọc bằng Gemini TTS và cache theo turn.
+
+Rubric trận nói lưu intelligibility, segmental accuracy, word stress, rhythm, intonation, fluency, word-level feedback, phoneme issues và drills. Accent identity không bị phạt.
+
+## Open data provenance
+
+- Tatoeba API: câu Anh-Việt, owner, sentence URL và license từng record.
+- CMU Pronouncing Dictionary: ARPABET/stress với upstream license.
+- Meta CoVoST 2: TSV chính thức/được cấp quyền, CC0 và provenance Common Voice.
+- Authorized Facebook Page: Graph API token server-only, rights holder và public authorization evidence bắt buộc; record chờ moderation.
+
+`questions.learning_content_id` chỉ được gắn khi model trả đúng ID trong tập source context đã cấp. ID bịa bị loại bỏ. Câu AI nguyên bản không được giả là dữ liệu bên ngoài.
+
+## Security và privacy
+
+- Secret answer table không cấp SELECT cho browser roles.
+- Mọi reveal kiểm tra membership và room phase.
+- Storage buckets audio/export là private; file chỉ được trả qua endpoint authenticated hoặc signed URL 60 giây.
+- Facebook/Groq/Gemini/Supabase/TURN secrets là server-only.
+- Social update grants chỉ cho `status/responded_at`; requester, recipient và room IDs không thể sửa từ browser.
+- User có thể tắt analytics/discovery, tạo JSON export và queue xóa tài khoản có xác nhận.
+- Telemetry metadata bị giới hạn độ dài, không ghi answer/audio, và bỏ liên kết user/room/match khi analytics bị tắt.
+- Maintenance worker hết hạn invite/export, release TTS lease, đánh dấu connection stale và prune telemetry/operation theo retention.
+
+## Observability và kiểm thử
+
+`telemetry_events` lưu correlation ID, stage, provider, duration và error code. `/api/internal/health` báo queue, stale presence, TTS failure, privacy backlog và lỗi một giờ gần nhất. Cả health và worker đều yêu cầu bearer secret.
+
+Playwright E2E chạy hai browser context với Anonymous Auth thật. Suite kiểm tra join/presence/host migration; suite AI opt-in kiểm tra queue thật, START ở cả hai phía, cùng round và NEXT ROUND ở cả hai phía. SQL production contracts kiểm tra object bắt buộc, private buckets và quyền secret answers mà không chèn row.

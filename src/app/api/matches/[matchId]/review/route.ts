@@ -27,7 +27,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
 
   const [playersResult, questionsResult] = await Promise.all([
     admin.from("match_players").select("user_id, score, correct_count, incorrect_count, avg_response_ms, profiles(display_name, avatar_url)").eq("match_id", matchId),
-    admin.from("questions").select("id, round_number, mode, prompt, instruction, time_limit, public_payload").eq("match_id", matchId).order("round_number")
+    admin.from("questions").select("id, round_number, mode, prompt, instruction, time_limit, public_payload, learning_content(id, license_id, attribution, learning_sources(display_name, homepage_url, license_url))").eq("match_id", matchId).order("round_number")
   ]);
   if (playersResult.error || questionsResult.error) {
     return NextResponse.json({ error: playersResult.error?.message ?? questionsResult.error?.message }, { status: 500 });
@@ -39,7 +39,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
     ? [{ data: [], error: null }, { data: [], error: null }]
     : await Promise.all([
       admin.from("question_answers").select("question_id, canonical_answer, accepted_answers, explanation, grading_rules").in("question_id", questionIds),
-      admin.from("submissions").select("question_id, user_id, answer, is_correct, timed_out, matched_answer, match_type, response_ms, points, hints_used, rubric_score, assessment").in("question_id", questionIds)
+      admin.from("submissions").select("question_id, user_id, answer, is_correct, timed_out, matched_answer, match_type, response_ms, points, hints_used, rubric_score, assessment, score_components").in("question_id", questionIds)
     ]);
   if (answersResult.error || submissionsResult.error) {
     return NextResponse.json({ error: answersResult.error?.message ?? submissionsResult.error?.message }, { status: 500 });
@@ -90,6 +90,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
         canonicalAnswer: answer?.canonical_answer ?? "",
         acceptedAnswers: answer?.accepted_answers ?? [],
         explanation: answer?.explanation ?? "",
+        source: question.learning_content ?? null,
         submissions: (submissionsResult.data ?? []).filter((item) => item.question_id === question.id).map((submission) => ({
           userId: submission.user_id,
           answer: submission.answer,
@@ -101,7 +102,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ mat
           points: submission.points,
           hintsUsed: submission.hints_used,
           rubricScore: submission.rubric_score,
-          assessment: submission.assessment
+          assessment: submission.assessment,
+          scoreComponents: submission.score_components
         }))
       };
     })

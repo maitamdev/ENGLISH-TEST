@@ -24,6 +24,15 @@ import type { RoomBootstrap, RoomMemberData, RoundResolutionData } from "@/types
 import type { GameGenerationPreferences } from "@/types/game";
 
 type Signal = { from: string; to: string; description?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit };
+type AudioPreflight = {
+  status: "idle" | "running" | "ready" | "warning";
+  microphone: boolean;
+  inputLevel: number;
+  outputDevice: boolean;
+  relayCandidate: boolean;
+  turnConfigured: boolean;
+  message: string;
+};
 
 export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const router = useRouter();
@@ -32,6 +41,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const isHost = room.currentUserId === room.hostId;
   const activeQuestion = room.match?.question;
   const activeRoundStartedAt = room.match?.roundStartedAt;
+  const activeRoundDeadlineAt = room.match?.roundDeadlineAt;
   const activePhase = room.phase;
   const activeMatchId = room.match?.id;
   const activeRound = room.match?.currentRound;
@@ -39,6 +49,9 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const currentMember = room.members.find((member) => member.userId === room.currentUserId);
   const readyCount = room.members.filter((member) => member.isReady).length;
   const [onlineIds, setOnlineIds] = useState<string[]>([]);
+  const connectedIds = useMemo(() => room.members
+    .filter((member) => onlineIds.includes(member.userId) || member.connectionState === "connected")
+    .map((member) => member.userId), [onlineIds, room.members]);
   const [request, setRequest] = useState("");
   const [preferences, setPreferences] = useState<GameGenerationPreferences>(() => ({
     presetId: MATCH_PRESETS[0].id,
@@ -58,6 +71,8 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const [audioOpen, setAudioOpen] = useState(false);
   const [micEnabled, setMicEnabled] = useState(false);
   const [voiceConnected, setVoiceConnected] = useState(false);
+  const [realtimeState, setRealtimeState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
+  const [preflight, setPreflight] = useState<AudioPreflight>({ status: "idle", microphone: false, inputLevel: 0, outputDevice: false, relayCandidate: false, turnConfigured: false, message: "Chưa kiểm tra thiết bị" });
   const [remoteAiActive, setRemoteAiActive] = useState(() => Boolean(initial.aiSession && initial.aiSession.coordinatorId !== initial.currentUserId));
   const channelRef = useRef<RealtimeChannel | null>(null);
   const geminiDataChannelRef = useRef<RTCDataChannel | null>(null);
@@ -93,14 +108,87 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   const timeoutSubmissionRef = useRef("");
   const advanceTriggeredRef = useRef("");
   const clockOffsetRef = useRef(0);
+  const clockRttRef = useRef(0);
+  const iceServersRef = useRef<RTCIceServer[]>([{ urls: "stun:stun.l.google.com:19302" }]);
+  const clientSessionIdRef = useRef("");
+  const refreshTimerRef = useRef<number | null>(null);
+  const startOperationRef = useRef("");
+  const advanceOperationRef = useRef("");
   const geminiQuestionRef = useRef("");
   const geminiEvaluationRef = useRef("");
   const geminiNudgesRef = useRef(new Set<string>());
   const onlineRef = useRef<string[]>([]);
+  const realtimeStateRef = useRef(realtimeState);
   const membersRef = useRef<RoomMemberData[]>(initial.members);
 
   useEffect(() => { onlineRef.current = onlineIds; }, [onlineIds]);
+  useEffect(() => { realtimeStateRef.current = realtimeState; }, [realtimeState]);
   useEffect(() => { membersRef.current = room.members; }, [room.members]);
+  useEffect(() => {
+    const stored = window.sessionStorage.getItem(`lexiduel:session:${room.roomId}`);
+    const sessionId = stored && /^[0-9a-f-]{36}$/iu.test(stored) ? stored : crypto.randomUUID();
+    window.sessionStorage.setItem(`lexiduel:session:${room.roomId}`, sessionId);
+    clientSessionIdRef.current = sessionId;
+  }, [room.roomId]);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/webrtc/ice-servers", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json() as { iceServers?: RTCIceServer[] };
+        if (active && response.ok && Array.isArray(body.iceServers) && body.iceServers.length > 0) iceServersRef.current = body.iceServers;
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const sendHeartbeat = async () => {
+      if (!clientSessionIdRef.current || stopped || !navigator.onLine) return;
+      try {
+        const response = await fetch(`/api/rooms/${room.roomId}/heartbeat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientSessionId: clientSessionIdRef.current,
+            action: "heartbeat",
+            deviceState: { microphone: micEnabled, muted, deafened, preflight: preflight.status },
+            connectionQuality: { realtime: realtimeStateRef.current, webrtc: peerRef.current?.connectionState ?? "new", clockRttMs: Math.round(clockRttRef.current) }
+          }),
+          cache: "no-store"
+        });
+        const body = await response.json().catch(() => ({})) as { hostEpoch?: number; stateVersion?: number };
+        if (!response.ok) throw new Error("heartbeat failed");
+        if (body.hostEpoch !== room.hostEpoch || body.stateVersion !== room.stateVersion) router.refresh();
+      } catch {
+        if (!stopped) setRealtimeState("reconnecting");
+      } finally {
+        if (!stopped) timer = window.setTimeout(sendHeartbeat, 5000);
+      }
+    };
+    const online = () => { setRealtimeState("reconnecting"); void sendHeartbeat(); };
+    const offline = () => setRealtimeState("reconnecting");
+    const disconnect = () => {
+      if (!clientSessionIdRef.current) return;
+      void fetch(`/api/rooms/${room.roomId}/heartbeat`, {
+        method: "POST", keepalive: true, headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientSessionId: clientSessionIdRef.current, action: "disconnect" })
+      });
+    };
+    window.addEventListener("online", online);
+    window.addEventListener("offline", offline);
+    window.addEventListener("pagehide", disconnect);
+    void sendHeartbeat();
+    return () => {
+      stopped = true;
+      if (timer) window.clearTimeout(timer);
+      window.removeEventListener("online", online);
+      window.removeEventListener("offline", offline);
+      window.removeEventListener("pagehide", disconnect);
+    };
+  }, [deafened, micEnabled, muted, preflight.status, room.hostEpoch, room.roomId, room.stateVersion, router]);
   useEffect(() => {
     const remoteLease = room.aiSession?.coordinatorId !== room.currentUserId ? room.aiSession : null;
     const remaining = remoteLease ? Math.max(0, 75_000 - (Date.now() - new Date(remoteLease.heartbeatAt).getTime())) : 0;
@@ -135,6 +223,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       if (!active || samples.length === 0) return;
       samples.sort((left, right) => left.rtt - right.rtt);
       clockOffsetRef.current = samples[0].offset;
+      clockRttRef.current = samples[0].rtt;
       timer = window.setTimeout(synchronize, 30_000);
     };
     void synchronize();
@@ -144,25 +233,28 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   useEffect(() => {
     if (activePhase !== "battle" || !activeQuestion || !activeRoundStartedAt) return;
     const startedAt = new Date(activeRoundStartedAt).getTime();
+    const deadlineAt = activeRoundDeadlineAt ? new Date(activeRoundDeadlineAt).getTime() : startedAt + activeQuestion.timeLimit * 1000;
     const updateSynchronizedClock = () => {
       const serverNow = performance.timeOrigin + performance.now() + clockOffsetRef.current;
       const untilStart = startedAt - serverNow;
       setRoundBeginsIn(Math.max(0, Math.ceil(untilStart / 1000)));
       setSeconds(untilStart > 0
         ? activeQuestion.timeLimit
-        : Math.max(0, Math.ceil(((startedAt + activeQuestion.timeLimit * 1000) - serverNow) / 1000))
+        : Math.max(0, Math.ceil((deadlineAt - serverNow) / 1000))
       );
     };
     updateSynchronizedClock();
     const timer = window.setInterval(updateSynchronizedClock, 100);
     return () => window.clearInterval(timer);
-  }, [activePhase, activeQuestion, activeRoundStartedAt]);
+  }, [activePhase, activeQuestion, activeRoundDeadlineAt, activeRoundStartedAt]);
 
   useEffect(() => {
     if (room.phase !== "countdown") return;
     const reset = window.setTimeout(() => setCountdown(3), 0);
     const interval = window.setInterval(() => setCountdown((value) => Math.max(1, value - 1)), 1000);
-    const timer = isHost && room.match ? window.setTimeout(() => void run(() => api(`/api/matches/${room.match!.id}/start`, { method: "POST" })), 3000) : undefined;
+    const operationKey = startOperationRef.current || crypto.randomUUID();
+    startOperationRef.current = operationKey;
+    const timer = isHost && room.match ? window.setTimeout(() => void run(() => api(`/api/matches/${room.match!.id}/start`, { method: "POST", headers: { "Idempotency-Key": operationKey } })), 3000) : undefined;
     return () => { window.clearTimeout(reset); window.clearInterval(interval); if (timer) window.clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.phase, room.match?.id, isHost]);
@@ -191,12 +283,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     const peerFor = (otherId: string) => {
       if (peerRef.current && peerUserRef.current === otherId) return peerRef.current;
       peerRef.current?.close();
-      const servers: RTCIceServer[] = [];
-      if (process.env.NEXT_PUBLIC_STUN_URL) servers.push({ urls: process.env.NEXT_PUBLIC_STUN_URL });
-      if (process.env.NEXT_PUBLIC_TURN_URL && process.env.NEXT_PUBLIC_TURN_USERNAME && process.env.NEXT_PUBLIC_TURN_CREDENTIAL) {
-        servers.push({ urls: process.env.NEXT_PUBLIC_TURN_URL, username: process.env.NEXT_PUBLIC_TURN_USERNAME, credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL });
-      }
-      const peer = new RTCPeerConnection({ iceServers: servers });
+      const peer = new RTCPeerConnection({ iceServers: iceServersRef.current });
       peerUserRef.current = otherId;
       if (isHost) attachGeminiDataChannel(peer.createDataChannel("gemini-audio", { ordered: true }));
       else peer.ondatachannel = (event) => { if (event.channel.label === "gemini-audio") attachGeminiDataChannel(event.channel); };
@@ -207,7 +294,10 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
         if (remoteAudioRef.current) remoteAudioRef.current.srcObject = event.streams[0];
         connectStreamToGeminiMix(event.streams[0]);
       };
-      peer.onconnectionstatechange = () => setVoiceConnected(peer.connectionState === "connected");
+      peer.onconnectionstatechange = () => {
+        setVoiceConnected(peer.connectionState === "connected");
+        if (["failed", "disconnected"].includes(peer.connectionState) && isHost) window.setTimeout(() => void startOfferRef.current?.(), 1200);
+      };
       peerRef.current = peer;
       return peer;
     };
@@ -223,8 +313,8 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
 
     channel
       .on("presence", { event: "sync" }, () => setOnlineIds(Object.keys(channel.presenceState())))
-      .on("broadcast", { event: "refresh" }, () => router.refresh())
-      .on("broadcast", { event: "game_state_changed" }, () => router.refresh())
+      .on("broadcast", { event: "refresh" }, refreshSoon)
+      .on("broadcast", { event: "game_state_changed" }, refreshSoon)
       .on("broadcast", { event: "gemini_audio" }, ({ payload }: { payload: { from?: string; audio?: string } }) => {
         if (payload.from !== room.currentUserId && typeof payload.audio === "string" && payload.audio.length < 500_000) void playRemoteGeminiAudio(payload.audio);
       })
@@ -244,11 +334,24 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
           else if (payload.candidate) await peer.addIceCandidate(payload.candidate);
         } catch { toast.error("Could not negotiate the voice connection."); }
       })
-      .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${room.roomId}` }, () => router.refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${room.roomId}` }, () => router.refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `room_id=eq.${room.roomId}` }, () => router.refresh())
-      .on("postgres_changes", { event: "*", schema: "public", table: "submissions" }, () => router.refresh())
-      .subscribe(async (status) => { if (status === "SUBSCRIBED") await channel.track({ userId: room.currentUserId, onlineAt: new Date().toISOString() }); });
+      .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${room.roomId}` }, refreshSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${room.roomId}` }, refreshSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `room_id=eq.${room.roomId}` }, refreshSoon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "submissions", ...(activeMatchId ? { filter: `match_id=eq.${activeMatchId}` } : {}) }, refreshSoon)
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          setRealtimeState("connected");
+          await channel.track({ userId: room.currentUserId, onlineAt: new Date().toISOString(), sessionId: clientSessionIdRef.current });
+        } else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) setRealtimeState("reconnecting");
+      });
+
+    function refreshSoon() {
+      if (refreshTimerRef.current) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        router.refresh();
+      }, 80);
+    }
 
     return () => {
       startOfferRef.current = null;
@@ -258,8 +361,10 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       geminiDataChannelRef.current = null;
       peerRef.current?.close();
       peerRef.current = null;
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
     };
-  }, [isHost, playRemoteGeminiAudio, supabase, room.code, room.currentUserId, room.roomId, router]);
+  }, [activeMatchId, isHost, playRemoteGeminiAudio, supabase, room.code, room.currentUserId, room.roomId, router]);
 
   useEffect(() => { if (isHost && micEnabled && onlineIds.some((id) => id !== room.currentUserId)) void startOfferRef.current?.(); }, [isHost, micEnabled, onlineIds, room.currentUserId]);
   useEffect(() => () => {
@@ -361,8 +466,10 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     const key = `${room.match.id}:${room.match.currentRound}`;
     if (advanceTriggeredRef.current === key) return;
     advanceTriggeredRef.current = key;
+    if (!advanceOperationRef.current.startsWith(`${key}:`)) advanceOperationRef.current = `${key}:${crypto.randomUUID()}`;
+    const operationKey = advanceOperationRef.current.slice(key.length + 1);
     setBusy(true);
-    void api(`/api/matches/${room.match.id}/advance`, { method: "POST" })
+    void api(`/api/matches/${room.match.id}/advance`, { method: "POST", headers: { "Idempotency-Key": operationKey } })
       .catch((error) => { advanceTriggeredRef.current = ""; showError(error); })
       .finally(() => setBusy(false));
     // The host advances only after the latest server-synchronized 2/2 ready state.
@@ -378,7 +485,9 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     if (activePhase !== "battle" || !activeQuestion || !activeRoundStartedAt) return;
     const questionKey = activeQuestion.id;
     const serverNow = performance.timeOrigin + performance.now() + clockOffsetRef.current;
-    const deadline = new Date(activeRoundStartedAt).getTime() + activeQuestion.timeLimit * 1000;
+    const deadline = activeRoundDeadlineAt
+      ? new Date(activeRoundDeadlineAt).getTime()
+      : new Date(activeRoundStartedAt).getTime() + activeQuestion.timeLimit * 1000;
     const remainingUntilDeadline = Math.max(0, deadline - serverNow);
 
     // Auto-submit "⏱ Hết giờ" when timer expires (only if user hasn't submitted)
@@ -409,7 +518,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
         router.refresh();
       }, remainingUntilDeadline + (rubricQuestion ? 16_000 : 3000));
     }
-  }, [activePhase, activeQuestion, activeRoundStartedAt, hasSubmittedCurrent, isHost, room.match, router]);
+  }, [activePhase, activeQuestion, activeRoundDeadlineAt, activeRoundStartedAt, hasSubmittedCurrent, isHost, room.match, router]);
 
   // Clean up timers when leaving battle phase
   useEffect(() => {
@@ -449,6 +558,59 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       toast.success("Microphone enabled.");
     }
     catch { toast.error("Microphone permission was not granted."); }
+  }
+
+  async function runAudioPreflight() {
+    if (preflight.status === "running") return;
+    setPreflight((value) => ({ ...value, status: "running", message: "Đang kiểm tra micro, loa và đường truyền" }));
+    let probe: RTCPeerConnection | null = null;
+    try {
+      const stream = await getMicrophoneStream();
+      const context = new AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      context.createMediaStreamSource(stream).connect(analyser);
+      await context.resume();
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      const samples = new Float32Array(analyser.fftSize);
+      analyser.getFloatTimeDomainData(samples);
+      const rms = Math.sqrt(samples.reduce((total, sample) => total + sample * sample, 0) / samples.length);
+      await context.close();
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const outputDevice = devices.some((device) => device.kind === "audiooutput");
+      probe = new RTCPeerConnection({ iceServers: iceServersRef.current });
+      probe.createDataChannel("preflight");
+      let relayCandidate = false;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(resolve, 3500);
+        probe!.onicecandidate = (event) => {
+          if (event.candidate?.candidate.includes(" typ relay ")) relayCandidate = true;
+          if (!event.candidate) { window.clearTimeout(timeout); resolve(); }
+        };
+        void probe!.createOffer().then((offer) => probe!.setLocalDescription(offer)).catch((error) => { window.clearTimeout(timeout); reject(error); });
+      });
+      const turnConfigured = iceServersRef.current.length > 1;
+      const audible = rms >= 0.003;
+      const warning = !audible || (turnConfigured && !relayCandidate);
+      setPreflight({
+        status: warning ? "warning" : "ready",
+        microphone: true,
+        inputLevel: Math.min(100, Math.round(rms * 1000)),
+        outputDevice,
+        relayCandidate,
+        turnConfigured,
+        message: !audible
+          ? "Micro đã mở nhưng tín hiệu quá nhỏ. Hãy nói thử và kiểm tra đúng thiết bị đầu vào."
+          : turnConfigured && !relayCandidate
+            ? "Micro tốt nhưng chưa lấy được TURN relay. Mạng chặn peer-to-peer có thể không gọi được."
+            : "Thiết bị và đường truyền thoại đã sẵn sàng."
+      });
+    } catch (error) {
+      setPreflight({ status: "warning", microphone: false, inputLevel: 0, outputDevice: false, relayCandidate: false, turnConfigured: iceServersRef.current.length > 1, message: error instanceof Error ? error.message : "Không kiểm tra được thiết bị audio" });
+    } finally {
+      probe?.close();
+    }
   }
 
   async function startGemini() {
@@ -503,7 +665,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     if (room.members.length !== 2) throw new Error("Bạn của bạn phải vào phòng trước khi Gemini tạo trận.");
     setBusy(true);
     try {
-      return await api("/api/ai/generate-game", { method: "POST", body: JSON.stringify({ roomId: room.roomId, request: brief, preferences }) }) as { matchId: string; blueprint: { title: string } };
+      return await api("/api/ai/generate-game", { method: "POST", body: JSON.stringify({ roomId: room.roomId, request: brief, preferences }) }) as { jobId: string; queued: true; message: string };
     } finally {
       setBusy(false);
     }
@@ -513,8 +675,8 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
     setRequest(brief);
     try {
       const generated = await createMatch(brief);
-      toast.success(`Match created: ${generated.blueprint.title}`);
-      return { ok: true, message: `Đã tạo trận “${generated.blueprint.title}” và lưu vào phòng.`, data: { matchId: generated.matchId } };
+      toast.success("Đã xếp hàng tạo trận. Hai bạn có thể theo dõi từng batch ngay trong phòng.");
+      return { ok: true, message: generated.message, data: { jobId: generated.jobId } };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not generate the match.";
       showError(error);
@@ -572,16 +734,16 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
   return <main className="room-page" suppressHydrationWarning>
     <audio ref={remoteAudioRef} autoPlay muted={deafened} />
     <header className="room-header"><div className="app-container room-header-inner"><div className="room-id"><Brand /><div className="room-code"><span>Room code</span><button onClick={() => { void navigator.clipboard.writeText(room.code); toast.success("Room code copied."); }}>{room.code}<Copy size={13} /></button></div></div><div className="room-actions"><button className="button button-secondary" onClick={() => setAudioOpen(true)}><Settings size={16} /><span>Settings</span></button><button className="button button-danger" onClick={leave} disabled={busy}><LogOut size={16} /><span>Leave</span></button></div></div></header>
-    <section className="room-main"><div className="app-container room-content"><div className="room-status-line"><div className="status"><span className="status-dot" /> {onlineIds.length} online <span className="room-status-copy">Supabase Realtime</span></div><div className="room-status-copy" suppressHydrationWarning>{gemini.status === "listening" ? voiceConnected ? "Gemini đang nghe cả hai bạn" : "Gemini đang nghe người bật AI" : gemini.status === "speaking" ? "Gemini đang nói" : remoteAiActive ? "Gemini đang chạy trên máy người còn lại" : voiceConnected ? "Direct voice connected" : micEnabled ? "Waiting for voice peer" : "Microphone off"}</div></div>{renderPhase()}</div></section>
+    <section className="room-main"><div className="app-container room-content"><div className="room-status-line"><div className="status"><span className={`status-dot ${realtimeState === "reconnecting" ? "warning" : ""}`} /> {connectedIds.length} online <span className="room-status-copy">{realtimeState === "connected" ? `Realtime · host epoch ${room.hostEpoch}` : "Đang nối lại Realtime"}</span></div><div className="room-status-copy" suppressHydrationWarning>{gemini.status === "listening" ? voiceConnected ? "Gemini đang nghe cả hai bạn" : "Gemini đang nghe người bật AI" : gemini.status === "speaking" ? "Gemini đang nói" : remoteAiActive ? "Gemini đang chạy trên máy người còn lại" : voiceConnected ? "Đàm thoại trực tiếp đã kết nối" : micEnabled ? "Đang chờ kết nối thoại" : "Micro đang tắt"}</div></div>{renderPhase()}</div></section>
     <footer className="room-footer"><div className="app-container room-footer-inner"><div className="footer-meta"><LockKeyhole size={14} /> Private room</div><div className="voice-controls"><button className={`icon-button ${muted ? "danger" : ""}`} onClick={() => { if (!micEnabled) { void enableMic(); return; } toggleMute(); streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = muted; }); }} aria-label={micEnabled ? "Toggle microphone" : "Enable microphone"}>{muted ? <MicOff size={19} /> : <Mic size={19} />}</button><button className={`icon-button ${deafened ? "danger" : ""}`} onClick={toggleDeafen} aria-label="Toggle audio">{deafened ? <VolumeX size={19} /> : <Headphones size={19} />}</button><button className="icon-button" onClick={() => setAudioOpen(true)} aria-label="Audio settings"><AudioLines size={19} /></button></div><div className="footer-meta end"><Volume2 size={14} /> WebRTC & Gemini Live</div></div></footer>
-    {audioOpen && <div className="audio-popover" onMouseDown={(event) => { if (event.currentTarget === event.target) setAudioOpen(false); }}><section className="surface audio-dialog" role="dialog" aria-modal="true"><div className="panel-heading"><h2>Voice settings</h2><button className="icon-button" onClick={() => setAudioOpen(false)} aria-label="Close"><X size={18} /></button></div><div className="audio-grid"><p className="text-muted">Supabase carries private signaling; WebRTC and Gemini Live handle voice streaming.</p><button className="button button-primary" onClick={enableMic} disabled={micEnabled}>{micEnabled ? "Microphone enabled" : "Enable microphone"}</button></div></section></div>}
+    {audioOpen && <div className="audio-popover" onMouseDown={(event) => { if (event.currentTarget === event.target) setAudioOpen(false); }}><section className="surface audio-dialog" role="dialog" aria-modal="true"><div className="panel-heading"><h2>Kiểm tra thoại</h2><button className="icon-button" onClick={() => setAudioOpen(false)} aria-label="Đóng"><X size={18} /></button></div><div className="audio-grid"><p className="text-muted">Kiểm tra micro, thiết bị phát, STUN và TURN trước khi thi nghe nói.</p><div className={`preflight-result ${preflight.status}`}><strong>{preflight.status === "running" ? "Đang kiểm tra" : preflight.status === "ready" ? "Sẵn sàng" : preflight.status === "warning" ? "Cần kiểm tra lại" : "Chưa kiểm tra"}</strong><p>{preflight.message}</p>{preflight.status !== "idle" && preflight.status !== "running" && <div className="preflight-metrics"><span>Micro {preflight.microphone ? "OK" : "Lỗi"}</span><span>Tín hiệu {preflight.inputLevel}%</span><span>Loa {preflight.outputDevice ? "OK" : "Không phát hiện"}</span><span>TURN {preflight.turnConfigured ? preflight.relayCandidate ? "OK" : "Chưa relay" : "Chưa cấu hình"}</span></div>}</div><button className="button button-primary" onClick={() => void runAudioPreflight()} disabled={preflight.status === "running"}>{preflight.status === "running" ? <LoaderCircle size={17} className="animate-spin" /> : <AudioLines size={17} />} {preflight.status === "idle" ? "Chạy kiểm tra" : "Kiểm tra lại"}</button></div></section></div>}
   </main>;
 
   function renderPhase() {
     const phase = room.phase;
-    if (phase === "idle") return <RoomGrid members={room.members} online={onlineIds}><Bot size={32} className="text-accent" /><h1>Phòng đã sẵn sàng.</h1><p>Hai bạn có thể nói chuyện bình thường. Khi đủ hai người, một trong hai có thể bật Gemini để chọn nội dung học hoặc thi.</p>{room.members.length === 2 ? <button className="button button-primary" onClick={() => run(() => status("AI_DISCUSSION"))} disabled={busy}><Play size={18} /> Bật Gemini và setup trận</button> : <p className="waiting-copy">Gửi mã phòng cho bạn của bạn để bắt đầu.</p>}</RoomGrid>;
+    if (phase === "idle") return <RoomGrid members={room.members} online={connectedIds}><Bot size={32} className="text-accent" /><h1>Phòng đã sẵn sàng.</h1><p>Hai bạn có thể nói chuyện bình thường. Khi đủ hai người, một trong hai có thể bật Gemini để chọn nội dung học hoặc thi.</p>{room.members.length === 2 ? <button className="button button-primary" onClick={() => run(() => status("AI_DISCUSSION"))} disabled={busy}><Play size={18} /> Bật Gemini và setup trận</button> : <p className="waiting-copy">Gửi mã phòng cho bạn của bạn để bắt đầu.</p>}</RoomGrid>;
     if (phase === "ai-joining") return <Loading title="Connecting to Gemini Live" detail="Establishing low-latency voice connection with Lexi AI Host..." />;
-    if (phase === "ai-discussion") return <RoomGrid members={room.members} online={onlineIds}>
+    if (phase === "ai-discussion") return <RoomGrid members={room.members} online={connectedIds}>
       <div className="ai-badge"><Sparkles size={15} /> Gemini Live teacher</div>
       <div className={`ai-avatar ${gemini.status === "speaking" ? "speaking" : ""}`}><Image src="/images/lexi-host.png" alt="Lexi AI host" fill sizes="126px" /></div>
       <Waveform active={gemini.status === "listening" || gemini.status === "speaking"} bars={19} />
@@ -594,6 +756,7 @@ export function RoomExperience({ initial }: { initial: RoomBootstrap }) {
       {gemini.error && <div className="gemini-error">{gemini.error}</div>}
       {gemini.inputTranscript && <div className="gemini-transcript"><span>You said</span><p>{gemini.inputTranscript}</p><button type="button" className="suggestion" onClick={() => setRequest(gemini.inputTranscript)}>Use as match brief</button></div>}
       {gemini.outputTranscript && <div className="ai-transcript">{gemini.outputTranscript}</div>}
+      {room.generation?.status === "failed" && <div className="gemini-error"><strong>Không tạo được trận trước đó.</strong><p>{room.generation.errorMessage ?? "Worker đã dừng sau các lần retry. Bạn có thể chỉnh yêu cầu và tạo lại."}</p></div>}
       <MatchStudio value={preferences} onChange={setPreferences} disabled={busy} />
       <form className="practice-request" onSubmit={generate}>
         <textarea value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Or type exactly what both players want to practise…" maxLength={1000} />
@@ -631,7 +794,7 @@ function Player({ member, online }: { member?: RoomMemberData; online: boolean }
 function Loading({ title, detail, progress, onRecover }: { title: string; detail: string; progress?: RoomBootstrap["generation"]; onRecover?: () => void }) {
   const [recoverable, setRecoverable] = useState(false);
   useEffect(() => {
-    if (!progress?.updatedAt || !onRecover || !["queued", "generating", "persisting"].includes(progress.status)) return;
+    if (!progress?.updatedAt || !onRecover || !["queued", "generating", "persisting", "retrying"].includes(progress.status)) return;
     const remaining = Math.max(0, 330_000 - (Date.now() - new Date(progress.updatedAt).getTime()));
     const timer = window.setTimeout(() => setRecoverable(true), remaining);
     return () => window.clearTimeout(timer);
@@ -651,9 +814,29 @@ function RoundResult({ room, data, currentReady, readyCount, busy, toggleReady }
     const submission = data.submissions.find((item) => item.userId === member.userId);
     const timedOut = Boolean(submission?.timedOut);
     const correct = Boolean(submission?.correct);
-    const verdict = !submission ? "Không có đáp án" : submission.rubricScore != null ? `${Math.round(submission.rubricScore)}/100 · +${submission.points}` : correct && timedOut ? "Đúng nhưng hết giờ · +0" : correct && submission.matchType === "minor_typo" ? `Chấp nhận lỗi gõ nhỏ · +${submission.points}` : correct ? `Đúng · +${submission.points}` : timedOut ? "Hết giờ · +0" : "Sai · +0";
-    return <article className="resolution" key={member.userId}><strong>{member.displayName}</strong><div className="resolution-answer">{submission?.answer === "⏱ Hết giờ" ? "Hết giờ" : submission?.answer ?? "Chưa trả lời"}</div>{submission?.matchedAnswer && submission.matchType === "minor_typo" && <small>Khớp với: {submission.matchedAnswer}</small>}{submission?.hintsUsed ? <small>Đã dùng {submission.hintsUsed} gợi ý</small> : null}{submission?.assessment && <div className="round-rubric">{submission.assessment.task != null ? <><span>Yêu cầu {Math.round(submission.assessment.task)}</span><span>Mạch lạc {Math.round(submission.assessment.coherence ?? 0)}</span></> : <><span>Nội dung {Math.round(submission.assessment.content ?? 0)}</span><span>Phát âm {Math.round(submission.assessment.pronunciation ?? 0)}</span><span>Trôi chảy {Math.round(submission.assessment.fluency ?? 0)}</span></>}<span>Ngữ pháp {Math.round(submission.assessment.grammar ?? 0)}</span><span>Từ vựng {Math.round(submission.assessment.vocabulary ?? 0)}</span><p>{submission.assessment.feedbackVi}</p></div>}<div className="resolution-meta"><span>{submission ? `${(submission.responseMs / 1000).toFixed(2)}s` : "—"}</span><span className={correct ? "text-accent" : "review-wrong"}>{verdict}</span></div></article>;
+    const verdict = !submission ? "Không có đáp án" : submission.rubricScore != null ? `${Math.round(submission.rubricScore)}/100 · +${submission.points}` : correct && timedOut ? "Đúng nhưng hết giờ · +0" : correct && submission.matchType === "semantic_appeal" ? `Đúng nghĩa tương đương · +${submission.points}` : correct && submission.matchType === "minor_typo" ? `Chấp nhận lỗi gõ nhỏ · +${submission.points}` : correct ? `Đúng · +${submission.points}` : timedOut ? "Hết giờ · +0" : "Sai · +0";
+    return <article className="resolution" key={member.userId}><strong>{member.displayName}</strong><div className="resolution-answer">{submission?.answer === "⏱ Hết giờ" ? "Hết giờ" : submission?.answer ?? "Chưa trả lời"}</div>{submission?.matchedAnswer && ["minor_typo", "semantic_appeal"].includes(submission.matchType ?? "") && <small>Khớp với: {submission.matchedAnswer}</small>}{submission?.hintsUsed ? <small>Đã dùng {submission.hintsUsed} gợi ý</small> : null}{submission?.scoreComponents && submission.rubricScore == null ? <div className="score-breakdown"><span>Nền +{submission.scoreComponents.base ?? 0}</span><span>Độ khó +{submission.scoreComponents.difficulty ?? 0}</span><span>Tốc độ +{submission.scoreComponents.speed ?? 0}</span><span>Chuỗi +{submission.scoreComponents.streak ?? 0}</span>{(submission.scoreComponents.hintDeduction ?? 0) > 0 ? <span>Gợi ý -{submission.scoreComponents.hintDeduction}</span> : null}</div> : null}{submission?.assessment && <div className="round-rubric">{submission.assessment.task != null ? <><span>Yêu cầu {Math.round(submission.assessment.task)}</span><span>Mạch lạc {Math.round(submission.assessment.coherence ?? 0)}</span></> : <><span>Nội dung {Math.round(submission.assessment.content ?? 0)}</span><span>Phát âm {Math.round(submission.assessment.pronunciation ?? 0)}</span><span>Trôi chảy {Math.round(submission.assessment.fluency ?? 0)}</span></>}<span>Ngữ pháp {Math.round(submission.assessment.grammar ?? 0)}</span><span>Từ vựng {Math.round(submission.assessment.vocabulary ?? 0)}</span><p>{submission.assessment.feedbackVi}</p></div>}<div className="resolution-meta"><span>{submission ? `${(submission.responseMs / 1000).toFixed(2)}s` : "-"}</span><span className={correct ? "text-accent" : "review-wrong"}>{verdict}</span></div>{submission && member.userId === room.currentUserId && !correct && !timedOut && submission.matchType !== "rubric" && <AppealButton submissionId={submission.id} />}</article>;
   })}</div><div className="ai-transcript">Đáp án được chấp nhận: {data.acceptedAnswers.join(", ")}</div><div className="ready-summary"><strong>{readyCount}/2 người đã xác nhận</strong><span>{readyCount === 0 ? `Cả hai bấm ${isFinalRound ? "FINISH" : "NEXT ROUND"} khi đã xem xong kết quả.` : readyCount === 1 ? "Đang chờ người còn lại xác nhận." : isFinalRound ? "Đang chốt kết quả trận." : "Đang chuyển sang câu tiếp theo."}</span></div><button className={currentReady ? "button button-secondary button-wide" : "button button-primary button-wide"} disabled={busy || readyCount === 2} onClick={toggleReady}>{currentReady ? <><RotateCcw size={17} /> Hủy xác nhận</> : <>{isFinalRound ? "FINISH — Tôi đồng ý" : "NEXT ROUND — Tôi sẵn sàng"}<ArrowRight size={17} /></>}</button></div></section>;
+}
+
+function AppealButton({ submissionId }: { submissionId: string }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [checking, setChecking] = useState(false);
+  async function appeal() {
+    if (reason.trim().length < 3 || checking) return;
+    setChecking(true);
+    try {
+      const response = await fetch("/api/answers/appeal", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ submissionId, reason }) });
+      const body = await response.json().catch(() => ({})) as { error?: string; verdict?: { accepted?: boolean; explanationVi?: string } };
+      if (!response.ok) throw new Error(body.error ?? "Không phúc khảo được đáp án");
+      toast.success(body.verdict?.accepted ? "Phúc khảo được chấp nhận và điểm đã cập nhật." : body.verdict?.explanationVi ?? "Phúc khảo không được chấp nhận.");
+      window.location.reload();
+    } catch (error) { showError(error); }
+    finally { setChecking(false); }
+  }
+  if (!open) return <button type="button" className="suggestion appeal-trigger" onClick={() => setOpen(true)}>Đáp án này đồng nghĩa?</button>;
+  return <div className="appeal-form"><textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} placeholder="Giải thích ngắn vì sao đáp án của bạn tương đương" /><div><button type="button" className="suggestion" onClick={() => setOpen(false)} disabled={checking}>Hủy</button><button type="button" className="suggestion" onClick={() => void appeal()} disabled={checking || reason.trim().length < 3}>{checking ? <LoaderCircle size={14} className="animate-spin" /> : <RotateCcw size={14} />} Phúc khảo bằng AI</button></div></div>;
 }
 
 function Result({ room, isHost, busy, rematch }: { room: RoomBootstrap; isHost: boolean; busy: boolean; rematch: () => void }) {

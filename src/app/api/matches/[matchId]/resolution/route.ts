@@ -31,7 +31,7 @@ export async function GET(request: Request, { params }: RouteContext<"/api/match
   if (!question) return NextResponse.json({ error: "Round question not found" }, { status: 404 });
   const [answerResult, submissionsResult] = await Promise.all([
     admin.from("question_answers").select("canonical_answer, accepted_answers, explanation").eq("question_id", question.id).single(),
-    admin.from("submissions").select("user_id, answer, is_correct, timed_out, matched_answer, match_type, response_ms, points, hints_used, rubric_score, assessment").eq("question_id", question.id).order("server_received_at")
+    admin.from("submissions").select("id, user_id, answer, is_correct, timed_out, matched_answer, match_type, response_ms, points, hints_used, rubric_score, assessment, score_components").eq("question_id", question.id).order("server_received_at")
   ]);
   if (answerResult.error || submissionsResult.error) return NextResponse.json({ error: answerResult.error?.message ?? submissionsResult.error?.message }, { status: 500 });
 
@@ -42,8 +42,9 @@ export async function GET(request: Request, { params }: RouteContext<"/api/match
     submissions: (submissionsResult.data ?? []).map((submission) => {
       const accepted = answerResult.data.accepted_answers as string[];
       const answerCorrect = accepted.some((answer) => normalizeAnswer(answer) === normalizeAnswer(submission.answer));
-      const timedOut = submission.timed_out || submission.response_ms > question.time_limit * 1000 || submission.answer === "⏱ Hết giờ";
+      const timedOut = submission.timed_out || submission.answer === "⏱ Hết giờ";
       return {
+        id: submission.id,
         userId: submission.user_id,
         answer: submission.answer,
         correct: submission.match_type ? submission.is_correct : answerCorrect,
@@ -54,7 +55,8 @@ export async function GET(request: Request, { params }: RouteContext<"/api/match
         points: submission.points,
         hintsUsed: submission.hints_used,
         rubricScore: submission.rubric_score,
-        assessment: submission.assessment
+        assessment: submission.assessment,
+        scoreComponents: submission.score_components
       };
     })
   });

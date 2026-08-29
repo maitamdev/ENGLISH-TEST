@@ -11,14 +11,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ mat
   const { data: authData } = await supabase.auth.getUser();
   if (!authData.user) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
 
-  const { data: match } = await supabase.from("matches").select("room_id, status, current_round, round_started_at, rooms(host_id, status)").eq("id", matchId).single();
+  const { data: match } = await supabase.from("matches").select("room_id, status, current_round, round_started_at, round_deadline_at, rooms(host_id, status)").eq("id", matchId).single();
   const room = Array.isArray(match?.rooms) ? match.rooms[0] : match?.rooms;
   if (!match || !room || room.host_id !== authData.user.id) return NextResponse.json({ error: "Only the host can force resolution" }, { status: 403 });
   if (match.status !== "active" || room.status !== "ROUND_ACTIVE") return NextResponse.json({ error: "Round is not active" }, { status: 409 });
 
   const { data: q } = await admin.from("questions").select("id, time_limit, mode").eq("match_id", matchId).eq("round_number", match.current_round).single();
   if (!q) return NextResponse.json({ error: "Question not found" }, { status: 404 });
-  const deadline = new Date(match.round_started_at ?? 0).getTime() + q.time_limit * 1000;
+  const deadline = match.round_deadline_at
+    ? new Date(match.round_deadline_at).getTime()
+    : new Date(match.round_started_at ?? 0).getTime() + q.time_limit * 1000;
   const spokenGrace = ["PRONUNCIATION", "SHADOWING", "SPEAKING", "ROLEPLAY", "DEBATE", "WRITING"].includes(q.mode) ? 15_000 : 2000;
   if (!match.round_started_at || Date.now() < deadline + spokenGrace) return NextResponse.json({ error: "The round deadline has not passed" }, { status: 409 });
 
@@ -33,7 +35,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ mat
         match_id: matchId, question_id: q.id, user_id: m.user_id,
         answer: "⏱ Hết giờ", normalized_answer: "⏱ hết giờ", is_correct: false,
         timed_out: true, match_type: "incorrect",
-        response_ms: q.time_limit * 1000, points: 0
+        response_ms: q.time_limit * 1000, points: 0, scoring_version: "v3",
+        score_components: { version: "v3", total: 0, reason: "timeout" }, original_points: 0,
+        verdict_confidence: 1
       });
       const totalBefore = m.correct_count + m.incorrect_count;
       await admin.from("match_players").update({

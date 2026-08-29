@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { z } from "zod";
 
 type LearningQuestion = { id: string; mode: string; prompt: string };
 type LearningSubmission = { user_id: string; question_id: string; is_correct: boolean };
@@ -31,6 +32,8 @@ async function updateLearningHistory(admin: SupabaseClient, matchId: string, top
   const todayDate = today.toISOString().slice(0, 10);
 
   for (const player of playersResult.data ?? []) {
+    const { data: priorUpdate } = await admin.from("match_learning_updates").select("match_id").eq("match_id", matchId).eq("user_id", player.user_id).maybeSingle();
+    if (priorUpdate) continue;
     const mine = submissions.filter((submission) => submission.user_id === player.user_id);
     const grouped = new Map<string, { correct: number; total: number }>();
     for (const submission of mine) {
@@ -69,11 +72,15 @@ async function updateLearningHistory(admin: SupabaseClient, matchId: string, top
       return [field, typeof oldScore === "number" ? Math.round(oldScore * 0.7 + matchScore * 0.3) : matchScore];
     }));
     await admin.from("user_learning_stats").upsert({ user_id: player.user_id, ...scores, current_streak_days: streak, last_practice_date: todayDate, updated_at: today.toISOString() });
+    const { error: ledgerError } = await admin.from("match_learning_updates").insert({ match_id: matchId, user_id: player.user_id });
+    if (ledgerError && ledgerError.code !== "23505") throw ledgerError;
   }
 }
 
-export async function POST(_request: Request, { params }: RouteContext<"/api/matches/[matchId]/advance">) {
+export async function POST(request: Request, { params }: RouteContext<"/api/matches/[matchId]/advance">) {
   const { matchId } = await params;
+  const idempotencyKey = z.string().uuid().safeParse(request.headers.get("idempotency-key"));
+  if (!idempotencyKey.success) return NextResponse.json({ error: "A valid idempotency key is required" }, { status: 400 });
   const supabase = await createSupabaseServerClient();
   const admin = createSupabaseAdminClient();
   if (!supabase || !admin) return NextResponse.json({ error: "Supabase is not configured" }, { status: 503 });
@@ -93,6 +100,8 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
     const { data: players } = await admin.from("match_players").select("user_id, score").eq("match_id", matchId).order("score", { ascending: false });
     const cooperative = (match.blueprint as { settings?: { experience?: string } })?.settings?.experience === "COOP";
     const winnerId = !cooperative && players && players.length > 1 && players[0].score !== players[1].score ? players[0].user_id : null;
+    const { error: ratingError } = await admin.rpc("finalize_match_ratings", { target_match_id: matchId });
+    if (ratingError) return NextResponse.json({ error: ratingError.message }, { status: 500 });
     try { await updateLearningHistory(admin, matchId, match.topic); }
     catch (learningError) { return NextResponse.json({ error: learningError instanceof Error ? learningError.message : "Could not update learning history" }, { status: 500 }); }
     const { error } = await admin.from("matches").update({ status: "completed", winner_id: winnerId, ended_at: new Date().toISOString() }).eq("id", matchId);
@@ -103,10 +112,14 @@ export async function POST(_request: Request, { params }: RouteContext<"/api/mat
   }
 
   const nextRound = match.current_round + 1;
-  const { error } = await admin.rpc("advance_match", { target_match_id: matchId, next_round: nextRound });
+  const { data: schedule, error } = await supabase.rpc("schedule_match_round", {
+    target_match_id: matchId,
+    target_round: nextRound,
+    target_idempotency_key: idempotencyKey.data,
+    lead_time_ms: 3000
+  });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   const { error: resetError } = await admin.from("room_members").update({ is_ready: false }).eq("room_id", match.room_id);
   if (resetError) return NextResponse.json({ error: resetError.message }, { status: 500 });
-  await admin.from("rooms").update({ status: "ROUND_ACTIVE" }).eq("id", match.room_id);
-  return NextResponse.json({ completed: false, currentRound: nextRound });
+  return NextResponse.json({ completed: false, currentRound: nextRound, schedule });
 }

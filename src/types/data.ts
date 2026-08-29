@@ -55,18 +55,23 @@ export type RoomMemberData = {
   joinedAt: string;
   score: number;
   streak: number;
+  lastSeenAt: string;
+  deviceState: Record<string, unknown>;
+  connectionQuality: Record<string, unknown>;
 };
 
 export type SubmissionView = {
+  id: string;
   userId: string;
   answer: string;
   correct: boolean;
   timedOut?: boolean;
-  matchType?: "accepted" | "minor_typo" | "incorrect";
+  matchType?: "accepted" | "minor_typo" | "incorrect" | "semantic_appeal" | "rubric";
   matchedAnswer?: string | null;
   responseMs: number;
   points: number;
   hintsUsed?: number;
+  scoreComponents?: { base?: number; accuracyFactor?: number; difficulty?: number; difficultyBonus?: number; speed?: number; speedBonus?: number; streak?: number; streakBonus?: number; modeFactor?: number; hintDeduction?: number; total?: number; version?: string } | null;
   rubricScore?: number | null;
   assessment?: {
     content?: number;
@@ -80,6 +85,14 @@ export type SubmissionView = {
     feedbackVi?: string;
     strengths?: string[];
     improvements?: string[];
+    intelligibility?: number;
+    segmental?: number;
+    wordStress?: number;
+    rhythm?: number;
+    intonation?: number;
+    wordFeedback?: { word: string; observed: string; target: string; feedbackVi: string }[];
+    phonemeFeedback?: { phoneme: string; issue: string; example: string }[];
+    practiceDrills?: string[];
   } | null;
 };
 
@@ -93,6 +106,8 @@ export type MatchView = {
   roundCount: number;
   currentRound: number;
   roundStartedAt: string | null;
+  roundDeadlineAt: string | null;
+  roundEpoch: number;
   winnerId: string | null;
   question: PublicQuestion | null;
   submissions: SubmissionView[];
@@ -109,12 +124,15 @@ export type RoomBootstrap = {
   roomId: string;
   code: string;
   hostId: string;
+  hostEpoch: number;
+  stateVersion: number;
+  hostLeaseExpiresAt: string;
   currentUserId: string;
   phase: RoomPhase;
   members: RoomMemberData[];
   match: MatchView | null;
   generation: {
-    status: "queued" | "generating" | "persisting" | "completed" | "failed";
+    status: "queued" | "generating" | "persisting" | "retrying" | "completed" | "failed" | "cancelled";
     stage: string;
     totalRounds: number | null;
     completedRounds: number;

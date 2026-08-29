@@ -12,6 +12,8 @@ Chạy trong SQL Editor theo đúng thứ tự:
 4. `migrations/20260827_production_hardening.sql`
 5. `migrations/20260829_ai_coordination.sql`
 6. `migrations/20260829_learning_labs.sql`
+7. `migrations/20260830_platform_v3_foundation.sql`
+8. `migrations/20260830_learning_intelligence.sql`
 
 Mỗi file migration được viết theo hướng chạy nâng cấp an toàn bằng `if exists` hoặc `if not exists` ở các phần có thể lặp lại. Không đổi thứ tự vì migration multi-skill sử dụng hàm normalize và broadcast được tạo trong game engine v2.
 
@@ -38,5 +40,11 @@ Migration production hardening thêm tiến độ tạo trận realtime và chuy
 Migration AI coordination đảm bảo mỗi phòng chỉ có một máy điều phối Gemini Live, thêm heartbeat/lease và broadcast trạng thái phiên AI. Migration này cũng phải chạy trước khi deploy phiên bản mới nhất.
 
 Migration learning labs thêm Listening Lab, Minimal Pairs, Story Listening, Shadowing, Sentence Builder, Cloze, Error Correction và Collocation. Migration này đồng thời bắt buộc các câu nói/viết chỉ được lưu qua endpoint chấm rubric được bảo vệ, không chứa dữ liệu mẫu.
+
+Migration platform v3 thêm lease/host migration, đồng hồ vòng authoritative, idempotency, queue tạo trận, cache TTS riêng tư, telemetry, privacy request, bạn bè, lời mời, rating và private Storage buckets. Migration learning intelligence thêm Score Engine V3, semantic appeal, FSRS-6, Error Notebook, AI Study Plan, provenance nguồn mở, speaking nhiều lượt và rubric phát âm chi tiết.
+
+Không chạy importer Facebook nếu chưa có quyền quản trị Page và bằng chứng cho phép tái sử dụng nội dung. Không scrape profile, group, comment hoặc Page của bên thứ ba. Tatoeba, CMUdict và CoVoST được lưu license/attribution đến từng record.
+
+Có thể chạy `tests/production_contracts.sql` sau migration để kiểm tra các table/function và ranh giới quyền quan trọng. File test chỉ đọc catalog và không chèn dữ liệu.
 
 Sau khi chạy SQL, reload schema cache của Supabase nếu dashboard chưa nhận các cột kỹ năng mới. Không cần import dữ liệu mẫu.

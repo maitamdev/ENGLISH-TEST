@@ -121,9 +121,17 @@ function AudioConsole({ question, settings }: Pick<Props, "question" | "settings
   useEffect(() => {
     const controller = new AbortController();
     let objectUrl = "";
-    fetch(`/api/ai/tts?questionId=${encodeURIComponent(question.id)}`, { cache: "force-cache", signal: controller.signal })
-      .then(async (response) => {
+    const load = async () => {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const response = await fetch(`/api/ai/tts?questionId=${encodeURIComponent(question.id)}`, { cache: "force-cache", signal: controller.signal });
+        if (response.status === 425 && attempt < 3) { await new Promise((resolve) => window.setTimeout(resolve, 1500 * (attempt + 1))); continue; }
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error ?? "Không tạo được audio");
+        return response;
+      }
+      throw new Error("Gemini vẫn đang chuẩn bị audio");
+    };
+    load()
+      .then(async (response) => {
         objectUrl = URL.createObjectURL(await response.blob());
         const audio = new Audio(objectUrl);
         audio.playbackRate = settings.listeningSpeed;
@@ -144,14 +152,7 @@ function AudioConsole({ question, settings }: Pick<Props, "question" | "settings
       await audio.play();
       setPlays((count) => count + 1);
     } catch {
-      const fallback = typeof question.publicData?.audioText === "string" ? question.publicData.audioText : "";
-      if ("speechSynthesis" in window && fallback) {
-        const utterance = new SpeechSynthesisUtterance(fallback);
-        utterance.lang = settings.listeningAccent === "UK" ? "en-GB" : settings.listeningAccent === "AU" ? "en-AU" : "en-US";
-        utterance.rate = settings.listeningSpeed;
-        window.speechSynthesis.speak(utterance);
-        setPlays((count) => count + 1);
-      } else setError("Chưa tải được audio. Hãy kiểm tra cấu hình Gemini TTS rồi thử lại.");
+      setError("Chưa tải được giọng Gemini. Hãy kiểm tra cấu hình Gemini TTS rồi thử lại.");
     } finally { setLoading(false); }
   }
 

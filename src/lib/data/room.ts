@@ -11,20 +11,20 @@ const phaseMap: Record<string, RoomPhase> = {
   ROUND_RESOLVING: "round-result", ROUND_RESULT: "round-result", MATCH_RESULT: "result", AI_REVIEW: "result"
 };
 
-type MemberRow = { user_id: string; is_ready: boolean; connection_state: string; joined_at: string; profiles: { display_name: string; avatar_url: string | null } | { display_name: string; avatar_url: string | null }[] | null };
+type MemberRow = { user_id: string; is_ready: boolean; connection_state: string; joined_at: string; last_seen_at: string; device_state: Record<string, unknown> | null; connection_quality: Record<string, unknown> | null; profiles: { display_name: string; avatar_url: string | null } | { display_name: string; avatar_url: string | null }[] | null };
 type PlayerRow = { user_id: string; score: number; current_streak: number };
 
 function one<T>(value: T | T[] | null): T | null { return Array.isArray(value) ? value[0] ?? null : value; }
 
 export async function getRoomBootstrap(supabase: SupabaseClient, code: string, userId: string): Promise<RoomBootstrap | null> {
-  const roomResult = await supabase.from("rooms").select("id, code, host_id, status").eq("code", code.toUpperCase()).maybeSingle();
+  const roomResult = await supabase.from("rooms").select("id, code, host_id, status, host_epoch, state_version, host_lease_expires_at").eq("code", code.toUpperCase()).maybeSingle();
   if (roomResult.error) throw roomResult.error;
   if (!roomResult.data) return null;
   const room = roomResult.data;
 
   const [membersResult, matchResult, generationResult, aiSessionResult] = await Promise.all([
-    supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
-    supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("room_members").select("user_id, is_ready, connection_state, joined_at, last_seen_at, device_state, connection_quality, profiles(display_name, avatar_url)").eq("room_id", room.id).order("joined_at"),
+    supabase.from("matches").select("id, title, topic, level, status, blueprint, round_count, current_round, round_started_at, round_deadline_at, round_epoch, winner_id").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("generation_jobs").select("status, stage, total_rounds, completed_rounds, error_message, updated_at").eq("room_id", room.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("ai_sessions").select("id, coordinator_id, heartbeat_at").eq("room_id", room.id).is("ended_at", null).order("started_at", { ascending: false }).limit(1).maybeSingle()
   ]);
@@ -44,14 +44,15 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
     playerRows = (playersResult.data ?? []) as PlayerRow[];
     let submissions: SubmissionView[] = [];
     if (questionResult.data) {
-      const submissionResult = await supabase.from("submissions").select("user_id, answer, is_correct, response_ms, points").eq("question_id", questionResult.data.id);
+      const submissionResult = await supabase.from("submissions").select("id, user_id, answer, is_correct, response_ms, points").eq("question_id", questionResult.data.id);
       if (submissionResult.error) throw submissionResult.error;
-      submissions = (submissionResult.data ?? []).map((row) => ({ userId: row.user_id, answer: row.answer, correct: row.is_correct, responseMs: row.response_ms, points: row.points }));
+      submissions = (submissionResult.data ?? []).map((row) => ({ id: row.id, userId: row.user_id, answer: row.answer, correct: row.is_correct, responseMs: row.response_ms, points: row.points }));
     }
     match = {
       id: currentMatch.id, title: currentMatch.title, topic: currentMatch.topic, level: currentMatch.level,
       status: currentMatch.status, blueprint: currentMatch.blueprint, roundCount: currentMatch.round_count,
       currentRound: currentMatch.current_round, roundStartedAt: currentMatch.round_started_at, winnerId: currentMatch.winner_id,
+      roundDeadlineAt: currentMatch.round_deadline_at, roundEpoch: currentMatch.round_epoch,
       question: questionResult.data ? {
         id: questionResult.data.id, mode: questionResult.data.mode, prompt: questionResult.data.prompt,
         instruction: questionResult.data.instruction, level: questionResult.data.level,
@@ -67,7 +68,8 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
     return {
       userId: member.user_id, displayName: profile?.display_name ?? "User", avatarUrl: profile?.avatar_url ?? null,
       isReady: member.is_ready, connectionState: member.connection_state, joinedAt: member.joined_at,
-      score: player?.score ?? 0, streak: player?.current_streak ?? 0
+      score: player?.score ?? 0, streak: player?.current_streak ?? 0,
+      lastSeenAt: member.last_seen_at, deviceState: member.device_state ?? {}, connectionQuality: member.connection_quality ?? {}
     };
   });
 
@@ -75,6 +77,9 @@ export async function getRoomBootstrap(supabase: SupabaseClient, code: string, u
     roomId: room.id,
     code: room.code,
     hostId: room.host_id,
+    hostEpoch: room.host_epoch,
+    stateVersion: room.state_version,
+    hostLeaseExpiresAt: room.host_lease_expires_at,
     currentUserId: userId,
     phase: phaseMap[room.status] ?? "idle",
     members,

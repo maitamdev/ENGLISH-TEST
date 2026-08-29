@@ -33,7 +33,7 @@ export type MatchPreset = {
 };
 
 export const MATCH_PRESETS: MatchPreset[] = [
-  { id: "vocabulary-duel", label: "Đấu từ vựng", description: "Dịch hai chiều, định nghĩa và điền ngữ cảnh.", skill: "Vocabulary", rounds: 10, timePerQuestion: 30, modes: [{ type: "VI_TO_EN", count: 4 }, { type: "EN_TO_VI", count: 4 }, { type: "CONTEXT", count: 2 }], settings: {} },
+  { id: "vocabulary-duel", label: "Đấu từ vựng", description: "Dịch hai chiều, định nghĩa và điền ngữ cảnh.", skill: "Vocabulary", rounds: 10, timePerQuestion: 45, modes: [{ type: "VI_TO_EN", count: 4 }, { type: "EN_TO_VI", count: 4 }, { type: "CONTEXT", count: 2 }], settings: {} },
   { id: "listening-sprint", label: "Thi nghe", description: "Nghe giọng thật, chọn đáp án và chép chính tả.", skill: "Listening", rounds: 10, timePerQuestion: 40, modes: [{ type: "LISTENING", count: 5 }, { type: "SPELLING", count: 3 }, { type: "MULTIPLE_CHOICE", count: 2 }], settings: { replayLimit: 2 } },
   { id: "listening-lab", label: "Listening Lab", description: "Nghe từ, câu và hội thoại ngắn với nhiều kiểu câu hỏi.", skill: "Listening", rounds: 12, timePerQuestion: 50, modes: [{ type: "AUDIO_CHOICE", count: 3 }, { type: "MINIMAL_PAIRS", count: 3 }, { type: "STORY_LISTENING", count: 3 }, { type: "SPELLING", count: 3 }], settings: { replayLimit: 3, listeningFocus: "MIXED" } },
   { id: "minimal-pair-duel", label: "Săn âm gần", description: "Phân biệt các cặp âm tiếng Anh dễ nghe nhầm.", skill: "Listening", rounds: 10, timePerQuestion: 30, modes: [{ type: "MINIMAL_PAIRS", count: 10 }], settings: { replayLimit: 3, listeningFocus: "WORDS" } },

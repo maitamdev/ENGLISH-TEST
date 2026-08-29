@@ -12,6 +12,9 @@ export function SiteHeader({ app = false, displayName }: { app?: boolean; displa
             <>
               <Link href="/dashboard">Dashboard</Link>
               <Link href="/review">Review</Link>
+              <Link href="/study">Study</Link>
+              <Link href="/speaking">Speaking</Link>
+              <Link href="/community">Community</Link>
               <Link href="/profile">Profile</Link>
             </>
           ) : (
